@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VisionPilot on nuScenes — How To</title>
+<style>
+  @page { size: A4; margin: 16mm 15mm 14mm 15mm; }
+  * { box-sizing: border-box; }
+  body {
+    font: 10.5pt/1.5 "DejaVu Sans", "Liberation Sans", Arial, sans-serif;
+    color: #1b1f24; margin: 0;
+  }
+  h1 { font-size: 21pt; margin: 0 0 2mm; letter-spacing: -0.3pt; }
+  h2 {
+    font-size: 13pt; margin: 9mm 0 2.5mm; padding-bottom: 1.2mm;
+    border-bottom: 1.5px solid #1b1f24; page-break-after: avoid;
+  }
+  h3 { font-size: 11pt; margin: 5mm 0 1.5mm; page-break-after: avoid; }
+  p, li { margin: 0 0 2mm; }
+  ul, ol { margin: 0 0 3mm; padding-left: 5.5mm; }
+  .lede { color: #4a5158; font-size: 10.5pt; margin-bottom: 5mm; }
+  code {
+    font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+    font-size: 9pt; background: #f0f2f4; padding: 0.4mm 1mm; border-radius: 2px;
+  }
+  pre {
+    font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+    font-size: 8.6pt; line-height: 1.45; background: #f6f8fa;
+    border: 1px solid #dfe3e8; border-left: 3px solid #4a5158;
+    padding: 2.5mm 3mm; margin: 0 0 3mm; white-space: pre-wrap;
+    word-break: break-word; page-break-inside: avoid;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .cmt { color: #6a737d; }
+  table { border-collapse: collapse; width: 100%; margin: 0 0 3mm; font-size: 9.2pt; }
+  th, td { border: 1px solid #dfe3e8; padding: 1.6mm 2.2mm; text-align: left; vertical-align: top; }
+  th { background: #f0f2f4; font-weight: 600; }
+  figure { margin: 0 0 4mm; page-break-inside: avoid; }
+  figure img { width: 100%; border: 1px solid #cfd4da; display: block; }
+  figcaption { font-size: 8.6pt; color: #6a737d; margin-top: 1.5mm; }
+  .note {
+    background: #fff8e6; border: 1px solid #f0d999; border-left: 3px solid #d9a441;
+    padding: 2.5mm 3mm; margin: 0 0 3mm; font-size: 9.5pt; page-break-inside: avoid;
+  }
+  .files { font-size: 9.2pt; }
+  .files td:first-child { font-family: "DejaVu Sans Mono", monospace; white-space: nowrap; }
+  header { border-bottom: 2.5px solid #1b1f24; padding-bottom: 3mm; margin-bottom: 5mm; }
+  .meta { font-size: 8.6pt; color: #6a737d; margin-top: 1.5mm; }
+  .pagebreak { page-break-before: always; }
+  table.perf { table-layout: fixed; }
+  table.perf th:first-child, table.perf td:first-child { width: 30%; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>VisionPilot on nuScenes</h1>
+  <div class="lede">Running open-loop inference on recorded video — setup, tooling and reference.</div>
+  <div class="meta">Reference machine: Ubuntu 22.04 · RTX 4060 Laptop (8&nbsp;GB) · CUDA 12.8 · repo
+  <code>Vision_Pilot_CAN_Open</code> — full setup instructions live in the top-level
+  <code>README.md</code></div>
+</header>
+
+<h2>1. Quick start</h2>
+
+<p>Everything runs through one script. From the repo:</p>
+
+<pre><code>cd &lt;repo&gt;/VisionPilot/scripts
+
+./run_inference.sh scene-0796                  <span class="cmt"># clean HUD window</span>
+./run_inference.sh scene-1077 -- --debug-viz   <span class="cmt"># telemetry overlay</span>
+./run_inference.sh scene-0655 --fast -- --no-window   <span class="cmt"># headless, no pacing</span>
+
+<span class="cmt"># your own footage</span>
+./run_inference.sh /path/to/dashcam.mp4 --speed-const 25</code></pre>
+
+<p>Press <code>Ctrl+C</code> in the terminal to stop early; the run ends by itself at the
+end of the clip.</p>
+
+<figure>
+  <img src="hud.png" alt="VisionPilot HUD on nuScenes scene-0796">
+  <figcaption>The production HUD on <code>scene-0796</code>: ego speed in kph, configured
+  speed limit badge, green planned path corridor, detected objects in cyan, and the closest
+  in-path object (CIPO) in red with its distance.</figcaption>
+</figure>
+
+<h2>2. run_inference.sh</h2>
+
+<p>Takes any video path, or a bare clip name that resolves against
+<code>VisionPilot/data/nuscenes/</code>.</p>
+
+<table>
+  <tr><th>Option</th><th>Meaning</th></tr>
+  <tr><td><code>--speed &lt;file&gt;</code></td>
+      <td>Vehicle speed track: one value in m/s per frame. Default: <code>&lt;video&gt;_speed.txt</code> beside the video.</td></tr>
+  <tr><td><code>--speed-const &lt;m/s&gt;</code></td>
+      <td>Synthesise a constant speed track when no file exists. Default 15.</td></tr>
+  <tr><td><code>--calib &lt;H.yaml&gt;</code></td>
+      <td>Camera homography. Default: <code>&lt;video&gt;_H.yaml</code> beside the video, else whatever is already in <code>config/H.yaml</code>.</td></tr>
+  <tr><td><code>--loop</code></td><td>Replay the video continuously.</td></tr>
+  <tr><td><code>--fast</code></td><td>Ignore the video frame rate — run as fast as the GPU allows.</td></tr>
+  <tr><td><code>--precision &lt;p&gt;</code></td>
+      <td><code>default</code>/<code>fp32</code> for the shipped weights, or <code>int8</code>, which also selects the tensorrt provider (see §6).</td></tr>
+  <tr><td><code>--provider &lt;p&gt;</code></td>
+      <td><code>cpu</code>, <code>cuda</code> or <code>tensorrt</code>.</td></tr>
+  <tr><td><code>-- &lt;args&gt;</code></td>
+      <td>Everything after <code>--</code> goes to the binary: <code>--debug-viz</code> (annotated telemetry overlay) or <code>--no-window</code> (headless).</td></tr>
+</table>
+
+<p>The script installs the chosen <code>H.yaml</code> into <code>config/</code>, regenerates the
+derived C matrix, writes <code>build/config/vision_pilot_test.conf</code>, then execs the
+binary from <code>build/</code>. Run <code>./run_inference.sh --help</code> for the same list.</p>
+
+<div class="note">
+  <b>Speed track length matters.</b> VisionPilot reads one speed value per inference
+  frame and aborts if it runs past the end of the file. The script pads a short track
+  with its last value automatically.
+</div>
+
+<h2>3. What ships in the repo</h2>
+
+<table class="files">
+  <tr><th>Path</th><th>What it is</th></tr>
+  <tr><td>VisionPilot/scripts/run_inference.sh</td><td>Run inference on any video.</td></tr>
+  <tr><td>VisionPilot/scripts/nuscenes_to_visionpilot.py</td><td>Convert nuScenes scenes into clips.</td></tr>
+  <tr><td>VisionPilot/data/nuscenes/*.mp4</td><td>Three converted clips, 30&nbsp;fps, 1600×900.</td></tr>
+  <tr><td>VisionPilot/data/nuscenes/*_speed.txt</td><td>Ego speed, m/s, one value per frame.</td></tr>
+  <tr><td>VisionPilot/data/nuscenes/*_H.yaml</td><td>Per-scene ground-plane homography.</td></tr>
+  <tr><td>VisionPilot/data/nuscenes/README.md</td><td>Short terminal-side quick reference.</td></tr>
+  <tr><td>README.md</td><td>Repo-level setup, build, configuration and troubleshooting.</td></tr>
+  <tr><td>VisionPilot/docs/nuscenes_howto.pdf</td><td>This document (source: <code>nuscenes_howto.html</code>).</td></tr>
+</table>
+
+<h3>The clips</h3>
+
+<table>
+  <tr><th>Clip</th><th>Frames</th><th>Length</th><th>Mean speed</th><th>Scene</th></tr>
+  <tr><td>scene-0796</td><td>588</td><td>19.6 s</td><td>12.1 m/s</td><td>Day, big street, car overtaking</td></tr>
+  <tr><td>scene-1077</td><td>599</td><td>19.9 s</td><td>12.6 m/s</td><td>Night, big street, high speed</td></tr>
+  <tr><td>scene-0655</td><td>594</td><td>19.8 s</td><td>8.2 m/s</td><td>Parking lot, bendy bus, jaywalker</td></tr>
+</table>
+
+<p>The raw nuScenes v1.0-mini dataset stays outside the repo — on the reference machine at
+<code>~/vision_pilot_data/nuscenes/</code> (5.1&nbsp;GB), together with the
+<code>v1.0-mini.tgz</code> it came from (4.2&nbsp;GB, safe to delete).</p>
+
+<div class="pagebreak"></div>
+
+<h2>4. Converting more scenes</h2>
+
+<pre><code>cd &lt;repo&gt;/VisionPilot/scripts
+
+<span class="cmt"># the 5 fastest-moving scenes in the mini split</span>
+/usr/bin/python3 nuscenes_to_visionpilot.py \
+    --root ~/vision_pilot_data/nuscenes \
+    --out  ../data/nuscenes --num-scenes 5
+
+<span class="cmt"># specific scenes</span>
+/usr/bin/python3 nuscenes_to_visionpilot.py \
+    --root ~/vision_pilot_data/nuscenes \
+    --out  ../data/nuscenes --scenes scene-0061 scene-0103</code></pre>
+
+<p>Each scene produces three files. Useful flags: <code>--fps</code> (default 30),
+<code>--crf</code> (x264 quality, lower is better, default 18), <code>--bumper-offset</code>
+(rear axle → front bumper, default 3.42&nbsp;m for the nuScenes Renault Zoe).</p>
+
+<h3>How the conversion works</h3>
+
+<ul>
+  <li><b>Video.</b> nuScenes CAM_FRONT runs at ~12&nbsp;Hz (samples + sweeps). Frames are
+      resampled onto a constant 30&nbsp;fps grid by nearest neighbour <i>in wall-clock
+      time</i>, so playback speed is true to life — some frames simply repeat. Encoded
+      with x264, <code>yuv420p</code>, at the native 1600×900.</li>
+  <li><b>Speed.</b> Differentiated from the scene's <code>ego_pose</code> trajectory,
+      lightly smoothed, then interpolated onto the frame grid.</li>
+  <li><b>Homography.</b> Derived from that scene's own camera intrinsics
+      <code>K</code> and extrinsics <code>(R, t)</code>. For the ground plane
+      <code>z = 0</code> in the ego frame, <code>G = K·[Rᵀe₁ | Rᵀe₂ | −Rᵀt]</code> maps
+      world <code>(X, Y, 1)</code> to pixels, so <code>H = T·G⁻¹</code> maps pixels back
+      to metres, with <code>T</code> shifting the origin from the rear axle to the front
+      bumper. Convention: X forward, Y left, metres.</li>
+</ul>
+
+<h2>5. How VisionPilot consumes those inputs</h2>
+
+<p>The <code>H</code> matrix is not read directly by the models. At build time (and by
+<code>run_inference.sh</code> on every run) <code>scripts/find_homography_C_matrix.py</code>
+combines it with the fixed model-view matrix <code>V</code> into a C matrix, and the
+preprocessor warps each frame through C into the canonical 1024×512 bird's-eye view the
+networks were trained on. Getting <code>H</code> right is therefore what makes distances
+and lane geometry line up.</p>
+
+<p>Three ONNX models then run per frame — AutoDrive (two-frame: distance, curvature,
+CIPO flag), AutoSteer (ego path) and AutoSpeed (in-path objects) — feeding fusion,
+tracking and an IPOPT-based planner.</p>
+
+<pre><code>Latency  pre=17.5 ms  AD=23.3 ms  AS=20.1 ms  ASp=24.6 ms  parallel=24.9 ms  wall=42.3 ms  24 fps
+plan: tyre=0.0017 rad  accel=1.244 m/s²  |  cte=-0.05m  |  cipo=true  dist=57.5 m  vel=+1.00 m/s</code></pre>
+
+<p>Roughly 24&nbsp;fps end-to-end on this machine (the three models run concurrently, so
+wall time is preprocessing plus the slowest model, not their sum).</p>
+
+<h2>6. Model precision — fp32 ↔ int8</h2>
+
+<p>Pick the weights straight from the run script:</p>
+
+<pre><code>./run_inference.sh scene-0796 --precision default   <span class="cmt"># shipped fp32 weights</span>
+./run_inference.sh scene-0796 --precision int8      <span class="cmt"># quantised; selects tensorrt</span></code></pre>
+
+<p>Measured on this machine, scene-0796, 588 frames, median per-frame times with the TensorRT
+engines already cached:</p>
+
+<table class="perf">
+  <tr><th>Setup</th><th>Wall</th><th>AutoDrive</th><th>AutoSteer</th><th>AutoSpeed</th></tr>
+  <tr><td><code>default</code> (fp32, cuda)</td><td>42.0 ms</td><td>21.9</td><td>20.3</td><td>23.7</td></tr>
+  <tr><td><code>int8</code> (int8, tensorrt)</td><td><b>22.7 ms</b></td><td><b>14.6</b></td><td><b>13.3</b></td><td><b>14.4</b></td></tr>
+</table>
+
+<p>Each model runs about 1.5× faster; the wall figure moves with the GPU's thermal state (a
+cool-GPU fp32 run measured 29.4&nbsp;ms), so call the end-to-end gain 1.3–1.8×. Accuracy holds
+up: the CIPO flag agrees with fp32 on <b>98.1%</b> of frames, shared-target distance differs by
+a median of 1.1&nbsp;m, and cross-track error by 0.036&nbsp;m.</p>
+
+<div class="note">
+  <b>int8 needs TensorRT.</b> The ONNX Runtime CUDA provider has no int8 kernels — it
+  dequantises the graph and runs fp32 math with quantisation overhead on top, measured at
+  <b>57.1&nbsp;ms</b>, twice as slow as plain fp32.
+</div>
+
+<h3>Regenerating the weights</h3>
+
+<pre><code>cd &lt;repo&gt;/VisionPilot/scripts
+/usr/bin/python3 quantize_models.py                      <span class="cmt"># all three models</span>
+/usr/bin/python3 quantize_models.py --calibrate entropy  <span class="cmt"># alternative ranges</span></code></pre>
+
+<p>Calibration frames come from the bundled clips through exactly the same preprocessing as the
+C++ pipeline. Five properties are load-bearing — miss one of the first three and TensorRT
+rejects the whole graph and silently falls back to CUDA; miss one of the last two and the
+models load, run fast and quietly produce nonsense:</p>
+
+<ul>
+  <li><b>Symmetric int8 zero points.</b> TensorRT refuses any <code>QuantizeLinear</code> whose
+      zero point is not all zeros — exactly what the previously shipped uint8 weights had.</li>
+  <li><b>Float biases</b> (<code>QuantizeBias: False</code>): an INT32 bias
+      <code>DequantizeLinear</code> is rejected outright.</li>
+  <li><b>Conv1d, Reshape-fed depthwise convs and the prediction head stay fp32.</b> One node
+      TensorRT cannot fuse disqualifies the entire graph.</li>
+  <li><b><code>op_types_to_quantize=["Conv"]</code>.</b> The tail concatenates box coordinates
+      (0–1021&nbsp;px) with class probabilities (0–1) into one tensor; quantising that Concat
+      gives it a single scale of ~8 and rounds every probability to zero. AutoSpeed then detects
+      nothing while its boxes still look plausible.</li>
+  <li><b>ORT graph optimisations off for int8</b> (handled in <code>onnx_engine.cpp</code>),
+      or ORT rewrites the QDQ pairs before TensorRT sees them.</li>
+</ul>
+
+<p>Because those last failures are silent, verify after regenerating: build the engines, check
+the log has no <code>No graph will run on TensorRT execution provider</code>, then run a clip
+and confirm cyan detection boxes still appear. A red CIPO marker with no cyan boxes means the
+scores collapsed.</p>
+
+<h3>Building engines without exhausting RAM</h3>
+
+<p>The first TensorRT run builds engines, and doing all three in one process peaked at
+<b>13&nbsp;GB</b> of host RAM — enough to be OOM-killed on this 16&nbsp;GB laptop. Build one
+model per process instead:</p>
+
+<pre><code>cd &lt;repo&gt;/VisionPilot/build
+./build_trt_engines all         <span class="cmt"># or: ./build_trt_engines autosteer</span></code></pre>
+
+<p>That caps the peak near 5&nbsp;GB and caches the engines, after which runs start in seconds.
+Per-model overrides (<code>model.precision.autodrive</code> and friends) let one model fall
+back to fp32 if its int8 engine ever fails to build.</p>
+
+<h2>7. Environment</h2>
+
+<p>Condensed from the top-level <code>README.md</code>, which has the full setup, Docker and
+configuration reference.</p>
+
+<pre><code>sudo apt install coinor-libipopt-dev libcppad-dev \
+                 libcudnn9-cuda-12 libcufft-12-8 libcurand-12-8
+
+<span class="cmt"># CppAD includes &lt;coin-or/...&gt;; Ubuntu 22.04 ships the headers in /usr/include/coin</span>
+sudo ln -sfn /usr/include/coin /usr/include/coin-or
+
+<span class="cmt"># ONNX Runtime 1.27.1, CUDA 12 build, unpacked to ~/onnxruntime/</span>
+
+cd &lt;repo&gt;/VisionPilot &amp;&amp; mkdir -p build &amp;&amp; cd build
+cmake -DONNXRUNTIME_ROOT=$HOME/onnxruntime/onnxruntime-linux-x64-gpu_cuda12-1.27.1 \
+      -DGPU=ON -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CXX_STANDARD_LIBRARIES="-lcppad_lib" ..
+make -j$(nproc)</code></pre>
+
+<p>Key settings in <code>VisionPilot/config/vision_pilot.conf</code>:
+<code>source.mode = video</code>, <code>engine.provider = cuda</code>,
+<code>model.precision = fp32</code>, <code>visualization_on = true</code>,
+<code>webrtc_on = false</code>, <code>speed_limit = 33.3</code> m/s.</p>
+
+<div class="note">
+  <b>Build inside <code>VisionPilot/build</code>.</b>
+  <code>scripts/find_homography_C_matrix.py</code> resolves <code>../config/H.yaml</code>
+  relative to the build directory, and the binary resolves <code>config/</code> and
+  <code>modules/models/weights/</code> relative to its working directory. A build tree anywhere
+  else fails at the <code>generate_config</code> step with
+  <code>numpy.linalg.LinAlgError: 0-dimensional array given</code>.
+</div>
+
+<div class="note">
+  <b>WebRTC is optional.</b> The <code>WebRTCStreamer</code> branch in
+  <code>modules/visualization/src/visualization.cpp</code> is guarded by
+  <code>#if ENABLE_WEBRTC</code>, which CMake defines only when GStreamer, Boost.System and
+  nlohmann/json are all present. Without them the build still succeeds and falls back to the
+  local OpenCV window. On the reference machine WebRTC is off because installing
+  <code>libgstreamer1.0-dev</code> wants to remove <code>libc++-dev</code> /
+  <code>libunwind-14-dev</code>.
+</div>
+
+<h2>8. Troubleshooting</h2>
+
+<table>
+  <tr><th>Symptom</th><th>Cause / fix</th></tr>
+  <tr><td><code>Failed to load libonnxruntime_providers_cuda.so … libcufft.so.11</code></td>
+      <td>Missing CUDA runtime library. <code>sudo apt install libcufft-12-8 libcurand-12-8 &amp;&amp; sudo ldconfig</code>.</td></tr>
+  <tr><td><code>FileInterface: read() called past end of speeds data</code></td>
+      <td>Speed track shorter than the clip. Use <code>run_inference.sh</code>, which pads it.</td></tr>
+  <tr><td><code>Config file not found: vision_pilot.conf</code></td>
+      <td>The binary resolves <code>config/</code> and <code>modules/models/weights/</code> relative to the working directory — run it from <code>build/</code>.</td></tr>
+  <tr><td>Path/lane overlay sits at the wrong distance</td>
+      <td><code>H.yaml</code> does not match the camera. Pass <code>--calib</code>, or calibrate with <code>Calibration/</code>.</td></tr>
+  <tr><td>No window appears</td>
+      <td><code>DISPLAY</code> is unset over SSH. Use <code>--no-window</code>, or set <code>DISPLAY=:1</code>.</td></tr>
+  <tr><td><code>Config file not found: autodrive_&lt;x&gt;.onnx</code></td>
+      <td><code>model.precision</code> must be <code>fp32</code> or <code>int8</code> (see §6).</td></tr>
+  <tr><td>A config edit has no effect</td>
+      <td>You changed <code>config/</code> but the binary reads <code>build/config/</code>. Copy it across, or re-run <code>cmake ..</code>.</td></tr>
+</table>
+
+<h2>9. Caveats</h2>
+
+<ul>
+  <li>nuScenes CAM_FRONT is a 70° horizontal-FOV urban camera; VisionPilot targets a
+      52–55° highway camera. The per-scene homography corrects the geometry, not the
+      field of view, so treat lane and path output as indicative rather than a
+      like-for-like benchmark.</li>
+  <li>The HUD reads out in kph: ego speed is <code>m/s × 3.6</code>, and the
+      <code>MAX 120</code> badge is <code>speed_limit = 33.3</code> m/s from
+      <code>vision_pilot.conf</code> — a configured value, not a sign detection.</li>
+  <li>Repeated frames from the 12&nbsp;Hz → 30&nbsp;fps resample give AutoDrive two
+      identical frames occasionally, which reads as zero relative velocity for that
+      frame. The tracker smooths over it.</li>
+  <li>Open-loop only: the planner's steering and acceleration commands are computed and
+      logged, but nothing drives back into the recording.</li>
+</ul>
+
+</body>
+</html>

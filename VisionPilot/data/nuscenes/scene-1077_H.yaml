@@ -1,0 +1,11 @@
+%YAML:1.0
+---
+# Camera homography transform matrix (image px -> world X fwd / Y left, metres)
+# Auto-generated from nuScenes CAM_FRONT intrinsics + extrinsics.
+H: !!opencv-matrix
+  rows: 3
+  cols: 3
+  dt: d
+  data: [ -2.061937970666216e-05, 3.571854570063369e-03, -5.669230453616777e+00,
+          3.123739739483081e-03, -3.035062872265174e-05, -2.557594305113414e+00,
+          1.664410272040970e-06, -2.067373622575574e-03, 1.000000000000000e+00 ]
