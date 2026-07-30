@@ -7,6 +7,10 @@
 
 namespace visionpilot::engine {
 
+// Extra guidance for a failed Run(), or "" when the message is not a known resource
+// problem. GPU exhaustion mid-clip reads as a cryptic allocator error otherwise.
+std::string inference_error_hint(const std::string& what);
+
 // Configuration that governs how the engine creates sessions.
 // One EngineConfig instance is typically shared across all models in main().
 struct Config {
@@ -20,6 +24,12 @@ struct Config {
 
     // GPU device index (cuda and tensorrt)
     int device_id = 0;
+
+    // Upper bound on GPU memory each session's arena may hold, in GB. The three models
+    // otherwise grow three independent arenas that never shrink, and on an 8 GB card
+    // shared with a desktop that ends in "Failed to allocate memory for requested
+    // buffer" mid-run. 0 disables the cap.
+    double gpu_mem_limit_gb = 0.0;
 };
 
 // OnnxEngine owns the ORT environment and carries execution-provider config.
@@ -50,6 +60,9 @@ private:
 
     std::unique_ptr<Ort::Session> create_cuda_session(
         const std::string& model_path) const;
+
+    // Shared CUDA provider tuning (arena strategy + optional memory cap).
+    void configure_cuda(OrtCUDAProviderOptions& cuda_opts) const;
 
     std::unique_ptr<Ort::Session> create_tensorrt_session(
         const std::string& model_path,

@@ -119,6 +119,8 @@ Config load_vision_pilot_config()
     cfg.engine.device_id    = parse_int(optional(kv, "engine.device_id", "0"), "engine.device_id");
     cfg.engine.cache_dir    = expand_home(optional(kv, "engine.cache_dir", "/tmp/visionpilot_trt_cache"));
     cfg.engine.workspace_gb = parse_double(optional(kv, "engine.workspace_gb", "1.0"), "engine.workspace_gb");
+    cfg.engine.gpu_mem_limit_gb = parse_double(
+        optional(kv, "engine.gpu_mem_limit_gb", "0.0"), "engine.gpu_mem_limit_gb");
 
     cfg.inference.precision    = optional(kv, "model.precision",    "fp32");
     cfg.inference.precision_ad  = optional(kv, "model.precision.autodrive", "");

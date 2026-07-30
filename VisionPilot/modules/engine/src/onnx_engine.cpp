@@ -8,6 +8,20 @@
 
 namespace visionpilot::engine {
 
+std::string inference_error_hint(const std::string& what)
+{
+    const bool out_of_memory =
+        what.find("Failed to allocate memory") != std::string::npos ||
+        what.find("out of memory")             != std::string::npos ||
+        what.find("CUDA_ERROR_OUT_OF_MEMORY")  != std::string::npos ||
+        what.find("cudaErrorMemoryAllocation") != std::string::npos;
+
+    if (!out_of_memory) return "";
+    return "\n  → the GPU is out of memory. VisionPilot needs roughly 0.6 GB; check what else"
+           "\n    is using the card (nvidia-smi), or cap this process with"
+           " engine.gpu_mem_limit_gb.";
+}
+
 OnnxEngine::OnnxEngine(const Config& cfg)
     : env_(ORT_LOGGING_LEVEL_WARNING, "VisionPilot")
     , cfg_(cfg)
@@ -21,6 +35,26 @@ OnnxEngine::OnnxEngine(const Config& cfg)
                cfg_.precision.c_str(), cfg_.workspace_gb, cfg_.cache_dir.c_str());
     }
     printf("\n");
+}
+
+// ─── Shared CUDA allocator settings ──────────────────────────────────────────
+// Each of the three sessions grows its own CUDA arena. kSameAsRequested extends by what
+// was actually asked for instead of rounding up to the next power of two, which keeps
+// the three arenas predictable; measured peak here is ~550 MB either way, so this is
+// steadiness rather than a saving. gpu_mem_limit_gb caps what VisionPilot will hold, so
+// it can be told to leave room for other GPU applications.
+//
+// If inference fails mid-run with "Failed to allocate memory for requested buffer", the
+// GPU is full — usually because something else on the machine (browser, IDE) is holding
+// it. VisionPilot itself still runs with a 0.45 GB cap.
+void OnnxEngine::configure_cuda(OrtCUDAProviderOptions& cuda_opts) const
+{
+    cuda_opts.device_id = cfg_.device_id;
+    cuda_opts.arena_extend_strategy = 1;  // kSameAsRequested
+    if (cfg_.gpu_mem_limit_gb > 0.0) {
+        cuda_opts.gpu_mem_limit =
+            static_cast<size_t>(cfg_.gpu_mem_limit_gb * 1024.0 * 1024.0 * 1024.0);
+    }
 }
 
 // ─── Public entry point ───────────────────────────────────────────────────────
@@ -68,7 +102,7 @@ std::unique_ptr<Ort::Session> OnnxEngine::create_cuda_session(
     opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
     OrtCUDAProviderOptions cuda_opts{};
-    cuda_opts.device_id = cfg_.device_id;
+    configure_cuda(cuda_opts);
     opts.AppendExecutionProvider_CUDA(cuda_opts);
 
     printf("[OnnxEngine] Creating CUDA session (device %d) → %s\n",
@@ -106,11 +140,12 @@ std::unique_ptr<Ort::Session> OnnxEngine::create_tensorrt_session(
     // Per-model prefix lets each model cache its own TRT engine file
     const std::string full_prefix = cache_prefix + precision + "_";
 
-    // Builder tactic search: level 5 is exhaustive, and for an int8 QDQ graph it explores
-    // enough int8/fp16 kernel combinations to peak past 13 GB of *host* RAM — enough to get
-    // the process OOM-killed on a 16 GB machine. Level 3 (TensorRT's default) builds the
-    // same int8 kernels within about 3 GB. Engines are cached, so this cost is one-off.
-    const char* builder_level = (precision == "int8") ? "3" : "5";
+    // Builder tactic search. Level 5 is exhaustive and explores enough kernel combinations
+    // to peak past 13 GB of *host* RAM while building all three models, which is enough to
+    // get the process OOM-killed on a 16 GB machine — it happened for both int8 and fp32.
+    // Level 3 is TensorRT's own default and builds the same kernels in a fraction of that.
+    // Engines are cached, so the tactic search is a one-off cost either way.
+    const char* builder_level = "3";
 
     // Minimum nodes before a subgraph is worth handing to TensorRT. Quantised graphs get
     // partitioned around the nodes left in fp32, and the small leftover fragments are the
@@ -152,7 +187,7 @@ std::unique_ptr<Ort::Session> OnnxEngine::create_tensorrt_session(
 
     // CUDA fallback for any subgraph TRT cannot handle
     OrtCUDAProviderOptions cuda_opts{};
-    cuda_opts.device_id = cfg_.device_id;
+    configure_cuda(cuda_opts);
     opts.AppendExecutionProvider_CUDA(cuda_opts);
 
     api.ReleaseTensorRTProviderOptions(trt_opts);

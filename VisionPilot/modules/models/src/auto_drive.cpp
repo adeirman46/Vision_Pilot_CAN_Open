@@ -63,7 +63,8 @@ AutoDriveOutput AutoDrive::infer(const float* prev_chw, const float* curr_chw)
             in_names_.data(),  inputs.data(),    inputs.size(),
             out_names_.data(), out_names_.size());
     } catch (const Ort::Exception& e) {
-        printf("[AutoDrive] Inference error: %s\n", e.what());
+        printf("[AutoDrive] Inference error: %s%s\n", e.what(),
+               engine::inference_error_hint(e.what()).c_str());
         return out;
     }
 

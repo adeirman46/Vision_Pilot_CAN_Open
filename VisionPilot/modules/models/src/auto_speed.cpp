@@ -62,7 +62,8 @@ AutoSpeedOutput AutoSpeed::infer(
             in_names_.data(),  &input_tensor, 1,
             out_names_.data(), out_names_.size());
     } catch (const Ort::Exception& e) {
-        printf("[AutoSpeed] Inference error: %s\n", e.what());
+        printf("[AutoSpeed] Inference error: %s%s\n", e.what(),
+               engine::inference_error_hint(e.what()).c_str());
         return out;
     }
 

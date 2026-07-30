@@ -100,7 +100,7 @@ end of the clip.</p>
   <tr><td><code>--loop</code></td><td>Replay the video continuously.</td></tr>
   <tr><td><code>--fast</code></td><td>Ignore the video frame rate — run as fast as the GPU allows.</td></tr>
   <tr><td><code>--precision &lt;p&gt;</code></td>
-      <td><code>default</code>/<code>fp32</code> for the shipped weights, or <code>int8</code>, which also selects the tensorrt provider (see §6).</td></tr>
+      <td><code>default</code> restores the shipped config verbatim (weights and provider), <code>fp32</code> swaps only the weights, <code>int8</code> also selects the tensorrt provider (see §6).</td></tr>
   <tr><td><code>--provider &lt;p&gt;</code></td>
       <td><code>cpu</code>, <code>cuda</code> or <code>tensorrt</code>.</td></tr>
   <tr><td><code>-- &lt;args&gt;</code></td>
@@ -122,6 +122,8 @@ binary from <code>build/</code>. Run <code>./run_inference.sh --help</code> for 
 <table class="files">
   <tr><th>Path</th><th>What it is</th></tr>
   <tr><td>VisionPilot/scripts/run_inference.sh</td><td>Run inference on any video.</td></tr>
+  <tr><td>VisionPilot/scripts/build_models.sh</td><td>Compile the TensorRT engines, one model per process.</td></tr>
+  <tr><td>VisionPilot/scripts/quantize_models.py</td><td>Regenerate the int8 weights.</td></tr>
   <tr><td>VisionPilot/scripts/nuscenes_to_visionpilot.py</td><td>Convert nuScenes scenes into clips.</td></tr>
   <tr><td>VisionPilot/data/nuscenes/*.mp4</td><td>Three converted clips, 30&nbsp;fps, 1600×900.</td></tr>
   <tr><td>VisionPilot/data/nuscenes/*_speed.txt</td><td>Ego speed, m/s, one value per frame.</td></tr>
@@ -204,8 +206,16 @@ wall time is preprocessing plus the slowest model, not their sum).</p>
 
 <p>Pick the weights straight from the run script:</p>
 
-<pre><code>./run_inference.sh scene-0796 --precision default   <span class="cmt"># shipped fp32 weights</span>
-./run_inference.sh scene-0796 --precision int8      <span class="cmt"># quantised; selects tensorrt</span></code></pre>
+<pre><code>./run_inference.sh scene-0796 --precision default   <span class="cmt"># shipped config, verbatim</span>
+
+./build_models.sh --precision int8                  <span class="cmt"># once: compile the engines</span>
+./run_inference.sh scene-0796 --precision int8      <span class="cmt"># then just run</span></code></pre>
+
+<p>int8 runs on TensorRT, which has to compile each model into a GPU-specific engine first.
+That compile takes minutes and several GB of RAM, so it lives in
+<code>build_models.sh</code> — <code>run_inference.sh</code> refuses to start when the engines
+are missing and tells you to build them (<code>--allow-build</code> overrides). Engines are
+cached, so you build once per precision.</p>
 
 <p>Measured on this machine, scene-0796, 588 frames, median per-frame times with the TensorRT
 engines already cached:</p>
@@ -260,16 +270,21 @@ scores collapsed.</p>
 
 <h3>Building engines without exhausting RAM</h3>
 
-<p>The first TensorRT run builds engines, and doing all three in one process peaked at
-<b>13&nbsp;GB</b> of host RAM — enough to be OOM-killed on this 16&nbsp;GB laptop. Build one
-model per process instead:</p>
+<p>Compiling all three models inside one process peaked at <b>13&nbsp;GB</b> of host RAM —
+enough to be OOM-killed on this 16&nbsp;GB laptop. <code>build_models.sh</code> builds one
+model per process (peak near 5&nbsp;GB) under a systemd memory cap:</p>
 
-<pre><code>cd &lt;repo&gt;/VisionPilot/build
-./build_trt_engines all         <span class="cmt"># or: ./build_trt_engines autosteer</span></code></pre>
+<pre><code>cd &lt;repo&gt;/VisionPilot/scripts
+./build_models.sh                        <span class="cmt"># int8, all three models</span>
+./build_models.sh --precision fp32       <span class="cmt"># fp32 engines</span>
+./build_models.sh --model autosteer      <span class="cmt"># one model</span>
+./build_models.sh --mem-max 8G --clean   <span class="cmt"># tighter cap, fresh build</span></code></pre>
 
-<p>That caps the peak near 5&nbsp;GB and caches the engines, after which runs start in seconds.
-Per-model overrides (<code>model.precision.autodrive</code> and friends) let one model fall
-back to fp32 if its int8 engine ever fails to build.</p>
+<p>It leaves the config on the precision it built, so the next run starts in seconds.
+<code>/tmp/visionpilot_trt_cache</code> is the default cache and <code>/tmp</code> is cleared
+on reboot — set <code>engine.cache_dir</code> elsewhere to keep engines. Per-model overrides
+(<code>model.precision.autodrive</code> and friends) let one model fall back to fp32 if its
+int8 engine ever fails to build.</p>
 
 <h2>7. Environment</h2>
 

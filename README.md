@@ -64,21 +64,21 @@ through C. Getting `H` right is what makes distances and lane geometry line up.
 
 ## Repository layout
 
-| Path                                                                       | What it is                                                          |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| [VisionPilot/](VisionPilot/)                                               | The stack itself — C++ app, modules, models, configs, scripts       |
-| [VisionPilot/app/](VisionPilot/app/)                                       | `vision_pilot.cpp` — the main loop                                  |
-| [VisionPilot/modules/](VisionPilot/modules/)                               | Sensing, engine, models, fusion, planning, visualization, logging   |
-| [VisionPilot/modules/models/weights/](VisionPilot/modules/models/weights/) | Shipped ONNX weights, fp32 and int8                                 |
-| [VisionPilot/config/](VisionPilot/config/)                                 | Runtime config, camera homography, CAN DBC                          |
-| [VisionPilot/tools/](VisionPilot/tools/)                                   | `build_trt_engines` — builds TensorRT engines one process at a time |
-| [VisionPilot/scripts/](VisionPilot/scripts/)                               | `run_inference.sh`, nuScenes converter, C-matrix generator          |
-| [VisionPilot/data/nuscenes/](VisionPilot/data/nuscenes/)                   | Three bundled nuScenes clips with speed tracks and calibration      |
-| [VisionPilot/docker/](VisionPilot/docker/)                                 | GPU and CPU images plus `build.sh` / `run.sh`                       |
-| [VisionPilot/docs/](VisionPilot/docs/)                                     | [nuScenes how-to (PDF)](VisionPilot/docs/nuscenes_howto.pdf)        |
-| [Calibration/](Calibration/)                                               | Ground-checkerboard extrinsic calibration tool                      |
-| [Sensing/](Sensing/)                                                       | Camera choice and mounting guide                                    |
-| [Simulation/](Simulation/)                                                 | CARLA (ROS 2 / Zenoh) and SODA.Sim integration                      |
+| Path                                                                       | What it is                                                           |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| [VisionPilot/](VisionPilot/)                                               | The stack itself — C++ app, modules, models, configs, scripts        |
+| [VisionPilot/app/](VisionPilot/app/)                                       | `vision_pilot.cpp` — the main loop                                   |
+| [VisionPilot/modules/](VisionPilot/modules/)                               | Sensing, engine, models, fusion, planning, visualization, logging    |
+| [VisionPilot/modules/models/weights/](VisionPilot/modules/models/weights/) | Shipped ONNX weights, fp32 and int8                                  |
+| [VisionPilot/config/](VisionPilot/config/)                                 | Runtime config, camera homography, CAN DBC                           |
+| [VisionPilot/tools/](VisionPilot/tools/)                                   | `build_trt_engines` — builds TensorRT engines one process at a time  |
+| [VisionPilot/scripts/](VisionPilot/scripts/)                               | `run_inference.sh`, `build_models.sh`, quantiser, nuScenes converter |
+| [VisionPilot/data/nuscenes/](VisionPilot/data/nuscenes/)                   | Three bundled nuScenes clips with speed tracks and calibration       |
+| [VisionPilot/docker/](VisionPilot/docker/)                                 | GPU and CPU images plus `build.sh` / `run.sh`                        |
+| [VisionPilot/docs/](VisionPilot/docs/)                                     | [nuScenes how-to (PDF)](VisionPilot/docs/nuscenes_howto.pdf)         |
+| [Calibration/](Calibration/)                                               | Ground-checkerboard extrinsic calibration tool                       |
+| [Sensing/](Sensing/)                                                       | Camera choice and mounting guide                                     |
+| [Simulation/](Simulation/)                                                 | CARLA (ROS 2 / Zenoh) and SODA.Sim integration                       |
 
 ## Requirements
 
@@ -260,24 +260,25 @@ cd VisionPilot/build && cmake ..     # re-copies config/ into build/config/
 
 ### `vision_pilot.conf`
 
-| Key                   | Default                      | Meaning                                                                         |
-| --------------------- | ---------------------------- | ------------------------------------------------------------------------------- |
-| `source.mode`         | `video`                      | `video`, `v4l2` or `ros2`                                                       |
-| `source.v4l2_device`  | `/dev/video0`                | Camera device in `v4l2` mode                                                    |
-| `source.v4l2_fps`     | `10`                         | Capture rate in `v4l2` mode                                                     |
-| `engine.provider`     | `cpu`                        | `cpu`, `cuda` or `tensorrt`                                                     |
-| `engine.device_id`    | `0`                          | GPU index                                                                       |
-| `engine.cache_dir`    | `/tmp/visionpilot_trt_cache` | TensorRT engine + timing cache                                                  |
-| `engine.workspace_gb` | `1.0`                        | TensorRT workspace budget                                                       |
-| `model.precision`     | `fp32`                       | `fp32` or `int8` — picks the weights file                                       |
-| `speed_limit`         | —                            | **Required.** Target speed cap in m/s, and the `MAX` badge (33.3 m/s = 120 kph) |
-| `Lf`                  | —                            | **Required.** Front axle to CoG in metres                                       |
-| `fusion.debug`        | `false`                      | Verbose fusion logging                                                          |
-| `fusion.cte_bias_m`   | `0.0`                        | Constant cross-track-error offset                                               |
-| `visualization_on`    | `false`                      | Render the HUD at all                                                           |
-| `webrtc_on`           | `false`                      | Stream over WebRTC instead of an OpenCV window                                  |
-| `webrtc_port`         | `8080`                       | WebRTC signalling/HTTP port                                                     |
-| `debug.wheel_dir`     | —                            | Steering-wheel assets for `--debug-viz`                                         |
+| Key                       | Default                      | Meaning                                                                         |
+| ------------------------- | ---------------------------- | ------------------------------------------------------------------------------- |
+| `source.mode`             | `video`                      | `video`, `v4l2` or `ros2`                                                       |
+| `source.v4l2_device`      | `/dev/video0`                | Camera device in `v4l2` mode                                                    |
+| `source.v4l2_fps`         | `10`                         | Capture rate in `v4l2` mode                                                     |
+| `engine.provider`         | `cpu`                        | `cpu`, `cuda` or `tensorrt`                                                     |
+| `engine.device_id`        | `0`                          | GPU index                                                                       |
+| `engine.cache_dir`        | `/tmp/visionpilot_trt_cache` | TensorRT engine + timing cache                                                  |
+| `engine.workspace_gb`     | `1.0`                        | TensorRT workspace budget                                                       |
+| `engine.gpu_mem_limit_gb` | `0` (off)                    | Cap on GPU memory VisionPilot's arenas may hold; it needs ~0.6 GB               |
+| `model.precision`         | `fp32`                       | `fp32` or `int8` — picks the weights file                                       |
+| `speed_limit`             | —                            | **Required.** Target speed cap in m/s, and the `MAX` badge (33.3 m/s = 120 kph) |
+| `Lf`                      | —                            | **Required.** Front axle to CoG in metres                                       |
+| `fusion.debug`            | `false`                      | Verbose fusion logging                                                          |
+| `fusion.cte_bias_m`       | `0.0`                        | Constant cross-track-error offset                                               |
+| `visualization_on`        | `false`                      | Render the HUD at all                                                           |
+| `webrtc_on`               | `false`                      | Stream over WebRTC instead of an OpenCV window                                  |
+| `webrtc_port`             | `8080`                       | WebRTC signalling/HTTP port                                                     |
+| `debug.wheel_dir`         | —                            | Steering-wheel assets for `--debug-viz`                                         |
 
 `vision_pilot_test.conf` adds `source.input_video`, `source.input_vehicle_speed`,
 `source.dataset`, `source.video_realtime` and `source.video_loop`. `vision_pilot_ros2.conf`
@@ -290,13 +291,25 @@ The simplest way is the `run_inference.sh` flag:
 
 ```bash
 cd VisionPilot/scripts
-./run_inference.sh scene-0796 --precision default   # VisionPilot's fp32 weights
-./run_inference.sh scene-0796 --precision int8      # quantised, picks tensorrt automatically
+./run_inference.sh scene-0796 --precision default   # VisionPilot's shipped config, verbatim
+
+./build_models.sh --precision int8                  # once: compile the TensorRT engines
+./run_inference.sh scene-0796 --precision int8      # then just run
 ```
 
+int8 runs on TensorRT, and TensorRT has to compile each model into a GPU-specific engine
+before it can execute. That compile takes minutes and several GB of RAM, so it belongs in
+[build_models.sh](VisionPilot/scripts/build_models.sh), not in a run: `run_inference.sh`
+refuses to start when the engines are missing and tells you to build them (pass
+`--allow-build` if you would rather it compiled in-process). Engines are cached in
+`engine.cache_dir`, so you build once per precision and every later run starts in seconds.
+
 `--precision` rewrites `build/config/vision_pilot.conf` and prints what it selected; omit it
-and the config is left exactly as it is. Measured on an RTX 4060 Laptop, scene-0796, 588
-frames, median per-frame wall time with the TensorRT engines already cached:
+and the config is left exactly as it is. `default` restores the whole shipped
+`config/vision_pilot.conf` — weights **and** provider — so a `tensorrt` setting left over
+from an int8 run cannot linger and trigger an unwanted fp32 engine build; `fp32` swaps only
+the weights. Measured on an RTX 4060 Laptop, scene-0796, 588 frames, median per-frame wall
+time with the TensorRT engines already cached:
 
 | setup                               | wall        | AutoDrive | AutoSteer | AutoSpeed |
 | ----------------------------------- | ----------- | --------- | --------- | --------- |
@@ -348,7 +361,7 @@ The script prints `TensorRT-compatible` per model, which covers the first point 
 the remaining failure modes are silent, check the result before trusting it:
 
 ```bash
-cd VisionPilot/build && ./build_trt_engines all   # must not print "No graph will run"
+cd VisionPilot/scripts && ./build_models.sh   # must not print "No graph will run"
 ```
 
 then run a clip and confirm cyan detection boxes still appear. A red CIPO marker with no cyan
@@ -364,20 +377,25 @@ model.precision           = int8
 model.precision.autodrive = fp32
 ```
 
-### Building the engines without exhausting RAM
-
-The first TensorRT run builds engines, and doing all three in one process peaked at **13 GB**
-of host RAM here — enough to be OOM-killed on a 16 GB laptop. Build them one process at a
-time instead:
+### Building the engines
 
 ```bash
-cd VisionPilot/build
-./build_trt_engines all         # or: ./build_trt_engines autosteer
+cd VisionPilot/scripts
+./build_models.sh                          # int8 engines, all three models
+./build_models.sh --precision fp32         # fp32 engines
+./build_models.sh --model autosteer        # a single model
+./build_models.sh --mem-max 8G --clean     # tighter cap, discard cached engines first
 ```
 
-That caps the peak at about 5 GB and caches the engines in `engine.cache_dir`, after which
-runs start in seconds. int8 builds also drop to `trt_builder_optimization_level = 3`, since
-level 5's tactic search is what drove the memory peak.
+Compiling all three models inside one process peaked at **13 GB** of host RAM here — enough
+to be OOM-killed on a 16 GB laptop. `build_models.sh` builds one model per process (peak near
+5 GB), wraps each in a systemd scope with a memory cap when systemd is available, and leaves
+the config on the precision it built so the next run just works.
+`trt_builder_optimization_level` is pinned to 3 (TensorRT's own default) instead of the
+exhaustive 5, which is what drove the peak.
+
+`/tmp/visionpilot_trt_cache` is the default cache, and `/tmp` is cleared on reboot — point
+`engine.cache_dir` somewhere persistent to keep engines across restarts.
 
 ### Accuracy
 
@@ -441,19 +459,20 @@ cd VisionPilot/build
 
 ## Troubleshooting
 
-| Symptom                                                            | Cause / fix                                                                     |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
-| `[engine] ONNXRUNTIME_ROOT is not set`                             | Pass `-DONNXRUNTIME_ROOT=<unpacked ORT dir>` to CMake                           |
-| `fatal error: coin-or/IpIpoptApplication.hpp: No such file`        | `sudo ln -sfn /usr/include/coin /usr/include/coin-or`                           |
-| `undefined reference to cppad_...`                                 | Configure with `-DCMAKE_CXX_STANDARD_LIBRARIES="-lcppad_lib"`                   |
-| `Failed to load libonnxruntime_providers_cuda.so … libcufft.so.11` | `sudo apt install libcufft-12-8 libcurand-12-8 && sudo ldconfig`                |
-| `Config file not found: vision_pilot.conf`                         | Run the binary from `VisionPilot/build`, not from the source root               |
-| `Config file not found: autodrive_<x>.onnx`                        | `model.precision` must be `fp32` or `int8`                                      |
-| `numpy.linalg.LinAlgError: 0-dimensional array given` during build | The C-matrix script needs `../config/H.yaml` — build inside `VisionPilot/build` |
-| `FileInterface: read() called past end of speeds data`             | Speed track shorter than the clip; use `run_inference.sh`, which pads it        |
-| Path or lane overlay at the wrong distance                         | `H.yaml` does not match the camera — pass `--calib` or recalibrate              |
-| No window appears                                                  | `DISPLAY` unset (e.g. over SSH). Use `--no-window`, or export a display         |
-| A config change is ignored                                         | You edited `config/` but the binary reads `build/config/`                       |
+| Symptom                                                            | Cause / fix                                                                                                                                     |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `[engine] ONNXRUNTIME_ROOT is not set`                             | Pass `-DONNXRUNTIME_ROOT=<unpacked ORT dir>` to CMake                                                                                           |
+| `fatal error: coin-or/IpIpoptApplication.hpp: No such file`        | `sudo ln -sfn /usr/include/coin /usr/include/coin-or`                                                                                           |
+| `undefined reference to cppad_...`                                 | Configure with `-DCMAKE_CXX_STANDARD_LIBRARIES="-lcppad_lib"`                                                                                   |
+| `Failed to load libonnxruntime_providers_cuda.so … libcufft.so.11` | `sudo apt install libcufft-12-8 libcurand-12-8 && sudo ldconfig`                                                                                |
+| `Config file not found: vision_pilot.conf`                         | Run the binary from `VisionPilot/build`, not from the source root                                                                               |
+| `Config file not found: autodrive_<x>.onnx`                        | `model.precision` must be `fp32` or `int8`                                                                                                      |
+| `numpy.linalg.LinAlgError: 0-dimensional array given` during build | The C-matrix script needs `../config/H.yaml` — build inside `VisionPilot/build`                                                                 |
+| `FileInterface: read() called past end of speeds data`             | Speed track shorter than the clip; use `run_inference.sh`, which pads it                                                                        |
+| Path or lane overlay at the wrong distance                         | `H.yaml` does not match the camera — pass `--calib` or recalibrate                                                                              |
+| No window appears                                                  | `DISPLAY` unset (e.g. over SSH). Use `--no-window`, or export a display                                                                         |
+| A config change is ignored                                         | You edited `config/` but the binary reads `build/config/`                                                                                       |
+| `Inference error: Failed to allocate memory for requested buffer`  | The GPU is full. VisionPilot needs ~0.6 GB — check `nvidia-smi` for a browser or IDE holding the card, or cap it with `engine.gpu_mem_limit_gb` |
 
 ## Further reading
 

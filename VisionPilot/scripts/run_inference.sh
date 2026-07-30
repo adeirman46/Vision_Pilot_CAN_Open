@@ -16,13 +16,16 @@
 #   --loop               replay the video in a loop.
 #   --fast               ignore the video frame rate, run as fast as possible.
 #   --precision <p>      which weights to run:
-#                          default | fp32  VisionPilot's shipped fp32 models
-#                          int8            quantised models — selects the tensorrt
-#                                          provider automatically, since that is the only
-#                                          one with real int8 kernels
+#                          default  restore VisionPilot's shipped config verbatim
+#                                   (fp32 weights *and* its engine.provider)
+#                          fp32     fp32 weights, leaving the provider alone
+#                          int8     quantised models — selects the tensorrt provider,
+#                                   since that is the only one with real int8 kernels
 #                        Omit to leave vision_pilot.conf exactly as it is.
 #   --provider <p>       execution provider: cpu, cuda or tensorrt. Selected automatically
 #                        (tensorrt) by --precision int8 unless given explicitly.
+#   --allow-build        let this run compile missing TensorRT engines itself. Off by
+#                        default: inference should run, not build. Use build_models.sh.
 #
 # Everything after `--` is forwarded to the VisionPilot binary:
 #   --debug-viz          annotated telemetry overlay instead of the clean HUD
@@ -70,6 +73,7 @@ LOOP="false"
 REALTIME="true"
 PRECISION=""
 PROVIDER=""
+ALLOW_BUILD="false"
 VP_ARGS=()
 
 while [ $# -gt 0 ]; do
@@ -84,11 +88,11 @@ while [ $# -gt 0 ]; do
         --fast)        REALTIME="false"; shift ;;
         --precision)   [ $# -ge 2 ] || { echo "error: --precision needs a value" >&2; exit 1; }
                        case "$2" in
-                           default) PRECISION="fp32" ;;
-                           fp32|int8) PRECISION="$2" ;;
+                           default|fp32|int8) PRECISION="$2" ;;
                            *) echo "error: --precision must be default, fp32 or int8" >&2; exit 1 ;;
                        esac
                        shift 2 ;;
+        --allow-build) ALLOW_BUILD="true"; shift ;;
         --provider)    [ $# -ge 2 ] || { echo "error: --provider needs a value" >&2; exit 1; }
                        case "$2" in cpu|cuda|tensorrt) ;; *) echo "error: --provider must be cpu, cuda or tensorrt" >&2; exit 1 ;; esac
                        PROVIDER="$2"; shift 2 ;;
@@ -156,8 +160,18 @@ fi
 # the binary actually reads. Only touch it when asked, so a hand-edited config is
 # left alone by default.
 MAIN_CONF="$BUILD_DIR/config/vision_pilot.conf"
+SRC_CONF="$VP_ROOT/config/vision_pilot.conf"
 if [ -n "$PRECISION" ] || [ -n "$PROVIDER" ]; then
     [ -f "$MAIN_CONF" ] || { echo "error: $MAIN_CONF not found — run cmake first" >&2; exit 1; }
+
+    if [ "$PRECISION" = "default" ]; then
+        # "default" means VisionPilot's shipped settings, engine included — restore the
+        # whole file from config/vision_pilot.conf rather than only swapping the weights,
+        # so a provider left over from an int8 run does not linger.
+        [ -f "$SRC_CONF" ] || { echo "error: $SRC_CONF not found" >&2; exit 1; }
+        cp "$SRC_CONF" "$MAIN_CONF"
+        PRECISION=""
+    fi
 
     if [ -n "$PRECISION" ]; then
         sed -i -e "s|^model\.precision  *=.*|model.precision    = $PRECISION|" \
@@ -178,9 +192,31 @@ if [ "$PRECISION_DESC" != "${PRECISION_DESC#int8}" ] && [ "$PROVIDER_DESC" != "t
     echo "note: int8 weights under the '$PROVIDER_DESC' provider are dequantised, not run as"
     echo "      int8 kernels — expect it to be slower than fp32. Add --provider tensorrt."
 fi
+# Inference should only ever run inference. Compiling TensorRT engines takes minutes and
+# several GB of RAM, and doing it inside this process has been enough to get the machine
+# OOM-killed — so if the engines are not cached yet, stop and say so instead.
 if [ "$PROVIDER_DESC" = "tensorrt" ]; then
-    echo "note: the first tensorrt run builds engines (minutes, several GB of RAM). Build them"
-    echo "      one model at a time first with:  cd $BUILD_DIR && ./build_trt_engines all"
+    CACHE_DIR="$(awk -F= '/^engine\.cache_dir/ {gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2}' "$MAIN_CONF")"
+    CACHE_DIR="${CACHE_DIR/#\~/$HOME}"
+    CACHE_DIR="${CACHE_DIR:-/tmp/visionpilot_trt_cache}"
+    WANT="${PRECISION_DESC%% *}"
+    # Counted with a glob rather than `ls | wc -l`: under `set -e -o pipefail` a failing
+    # ls (no cache directory at all) would abort the script with no message.
+    CACHED=0
+    for engine in "$CACHE_DIR"/*"_${WANT}_"*.engine; do
+        [ -e "$engine" ] && CACHED=$((CACHED + 1))
+    done
+    if [ "$CACHED" -lt 3 ] && [ "$ALLOW_BUILD" = "false" ]; then
+        echo "error: only $CACHED of 3 $WANT TensorRT engines are cached in $CACHE_DIR" >&2
+        echo "       Build them once, one model per process:" >&2
+        echo "         ./build_models.sh --precision $WANT" >&2
+        echo "       Then this script starts in seconds. To compile inside this run anyway" >&2
+        echo "       (minutes, several GB of RAM), pass --allow-build." >&2
+        exit 1
+    fi
+    if [ "$CACHED" -lt 3 ]; then
+        echo "note: only $CACHED of 3 $WANT engines cached — compiling the rest in-process"
+    fi
 fi
 
 # ── Test config ──────────────────────────────────────────────────────────────
