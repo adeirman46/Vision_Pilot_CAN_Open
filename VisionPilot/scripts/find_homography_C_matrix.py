@@ -42,12 +42,19 @@ def find_homography_C_matrix(H: np.ndarray) -> np.ndarray:
     return C
 
 
+DEFAULT_H = Path(__file__).resolve().parent.parent / "config" / "H.yaml"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build C from --ground-h and fixed VP model V")
-    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--ground-h", type=Path, default=DEFAULT_H)
+    parser.add_argument("--output", type=Path, default=Path("config/homography_C_matrix.yaml"))
     args = parser.parse_args()
 
-    H = load_homography_H_matrix(Path('../config/H.yaml'))
+    if not args.ground_h.is_file():
+        parser.error(f"ground homography not found: {args.ground_h}")
+
+    H = load_homography_H_matrix(args.ground_h)
     C = find_homography_C_matrix(H)
 
     out = args.output

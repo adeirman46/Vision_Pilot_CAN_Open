@@ -18,13 +18,15 @@ directory; any other path is used as-is.
 
 ## Clips
 
-Converted from nuScenes v1.0-mini CAM_FRONT (1600x900), the three fastest-moving scenes.
+Converted from nuScenes v1.0-mini CAM_FRONT (1600x900), fastest-moving scene first.
 
-| clip | frames | length | mean speed | scene |
-|---|---|---|---|---|
-| `scene-0796.mp4` | 588 | 19.6 s | 12.1 m/s | day, big street, overtaking car |
-| `scene-1077.mp4` | 599 | 19.9 s | 12.6 m/s | night, big street, high speed |
-| `scene-0655.mp4` | 594 | 19.8 s | 8.2 m/s | parking lot, bendy bus, jaywalker |
+| clip             | frames | length | mean speed | scene                                    |
+| ---------------- | ------ | ------ | ---------- | ---------------------------------------- |
+| `scene-1077.mp4` | 600    | 20.0 s | 12.6 m/s   | night, big street, high speed            |
+| `scene-0796.mp4` | 589    | 19.6 s | 12.1 m/s   | day, big street, overtaking car          |
+| `scene-0655.mp4` | 595    | 19.8 s | 8.2 m/s    | parking lot, bendy bus, jaywalker        |
+| `scene-0103.mp4` | 584    | 19.5 s | 6.1 m/s    | many pedestrians, cyclist, turning car   |
+| `scene-0061.mp4` | 576    | 19.2 s | 4.7 m/s    | construction, left turn, following a van |
 
 Each clip has two siblings, both picked up automatically by `run_inference.sh`:
 

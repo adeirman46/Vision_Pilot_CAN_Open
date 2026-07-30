@@ -54,7 +54,8 @@ done
 TOOL="$BUILD_DIR/build_trt_engines"
 [ -x "$TOOL" ] || {
     echo "error: $TOOL not built." >&2
-    echo "       cd $VP_ROOT/build && cmake .. && make -j\$(nproc)" >&2
+    echo "       Set the machine up and build it in one step:" >&2
+    echo "         $(cd "$VP_ROOT/.." && pwd)/setup.sh" >&2
     exit 1; }
 
 MAIN_CONF="$BUILD_DIR/config/vision_pilot.conf"

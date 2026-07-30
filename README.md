@@ -66,6 +66,7 @@ through C. Getting `H` right is what makes distances and lane geometry line up.
 
 | Path                                                                       | What it is                                                           |
 | -------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| [setup.sh](setup.sh)                                                       | One-command setup — packages, ONNX Runtime, build                    |
 | [VisionPilot/](VisionPilot/)                                               | The stack itself — C++ app, modules, models, configs, scripts        |
 | [VisionPilot/app/](VisionPilot/app/)                                       | `vision_pilot.cpp` — the main loop                                   |
 | [VisionPilot/modules/](VisionPilot/modules/)                               | Sensing, engine, models, fusion, planning, visualization, logging    |
@@ -73,7 +74,7 @@ through C. Getting `H` right is what makes distances and lane geometry line up.
 | [VisionPilot/config/](VisionPilot/config/)                                 | Runtime config, camera homography, CAN DBC                           |
 | [VisionPilot/tools/](VisionPilot/tools/)                                   | `build_trt_engines` — builds TensorRT engines one process at a time  |
 | [VisionPilot/scripts/](VisionPilot/scripts/)                               | `run_inference.sh`, `build_models.sh`, quantiser, nuScenes converter |
-| [VisionPilot/data/nuscenes/](VisionPilot/data/nuscenes/)                   | Three bundled nuScenes clips with speed tracks and calibration       |
+| [VisionPilot/data/nuscenes/](VisionPilot/data/nuscenes/)                   | Five bundled nuScenes clips with speed tracks and calibration        |
 | [VisionPilot/docker/](VisionPilot/docker/)                                 | GPU and CPU images plus `build.sh` / `run.sh`                        |
 | [VisionPilot/docs/](VisionPilot/docs/)                                     | [nuScenes how-to (PDF)](VisionPilot/docs/nuscenes_howto.pdf)         |
 | [Calibration/](Calibration/)                                               | Ground-checkerboard extrinsic calibration tool                       |
@@ -93,11 +94,58 @@ through C. Getting `H` right is what makes distances and lane geometry line up.
 | ROS 2 (optional)  | Jazzy — `rclcpp`, `cv_bridge`, `image_transport`                                               |
 | Python            | `python3` with `numpy` + `opencv-python` (C-matrix generator); `ffmpeg` for `run_inference.sh` |
 
-A GPU is not strictly required — `engine.provider = cpu` works, just slowly.
+A GPU is not strictly required — `engine.provider = cpu` works, just slowly. Everything in
+that table except the NVIDIA driver and CUDA itself is installed by [`setup.sh`](setup.sh).
 
 ## Setup
 
-### 1. Clone
+[`setup.sh`](setup.sh) does all of it — submodules, apt packages, the coin-or header link,
+the ONNX Runtime release matching your CUDA version, and the build:
+
+```bash
+git clone --recurse-submodules https://github.com/adeirman46/Vision_Pilot_CAN_Open.git
+cd Vision_Pilot_CAN_Open
+./setup.sh
+```
+
+Then run a clip:
+
+```bash
+VisionPilot/scripts/run_inference.sh scene-0796
+```
+
+It prompts for `sudo` once, for the package install, and is safe to re-run: an ONNX Runtime
+that is already unpacked gets reused and the build is incremental.
+
+| Option              | Meaning                                                                  |
+| ------------------- | ------------------------------------------------------------------------ |
+| `--gpu` / `--cpu`   | Force the target. Default: GPU when `nvidia-smi` reports a device        |
+| `--ort-version <v>` | ONNX Runtime release to fetch (default 1.27.1)                           |
+| `--ort-root <dir>`  | Use an ONNX Runtime already unpacked at `<dir>`; skip the download       |
+| `--ort-dir <dir>`   | Where releases are unpacked (default `~/onnxruntime`)                    |
+| `--jobs <n>`        | Compile jobs. Default: cores, capped at one per GB of free RAM           |
+| `--webrtc`          | Also install GStreamer/Boost/json so the HUD can stream over WebRTC      |
+| `--ros2`            | Build the ROS 2 interfaces — source ROS 2 in the shell first             |
+| `--engines <p>`     | Compile the TensorRT engines for `fp32` or `int8` once the build is done |
+| `--skip-apt`        | Leave system packages alone                                              |
+| `--clean`           | Delete `VisionPilot/build` before configuring                            |
+| `--verify`          | Finish with a headless run of scene-0796 as a smoke test                 |
+
+```bash
+./setup.sh --cpu                     # no NVIDIA GPU
+./setup.sh --engines int8 --verify   # build the int8 engines too, then smoke-test
+./setup.sh --skip-apt --clean        # rebuild from scratch, touch nothing system-wide
+```
+
+`--engines` is the only slow extra: TensorRT compiles each model into a GPU-specific engine,
+minutes apiece. Skip it unless you want the `tensorrt` provider — see
+[Switching model precision](#switching-model-precision-fp32--int8).
+
+### Doing it by hand
+
+What `setup.sh` runs, in case you would rather drive it yourself or it fails partway.
+
+#### 1. Clone
 
 ```bash
 git clone --recurse-submodules https://github.com/adeirman46/Vision_Pilot_CAN_Open.git
@@ -106,7 +154,7 @@ cd Vision_Pilot_CAN_Open
 
 Already cloned without submodules? `git submodule update --init --recursive`.
 
-### 2. System dependencies
+#### 2. System dependencies
 
 ```bash
 sudo apt update
@@ -134,7 +182,7 @@ On a GPU machine also install the CUDA runtime pieces ONNX Runtime needs — for
 sudo apt install -y libcudnn9-cuda-12 libcufft-12-8 libcurand-12-8 && sudo ldconfig
 ```
 
-### 3. ONNX Runtime
+#### 3. ONNX Runtime
 
 Download a release matching your CUDA major version and unpack it anywhere; the path is passed
 to CMake, not installed system-wide.
@@ -148,11 +196,12 @@ mkdir -p ~/onnxruntime && tar -xzf onnxruntime-linux-x64-gpu_cuda12-${ORT}.tgz -
 For a CPU-only machine take the `onnxruntime-linux-x64-${ORT}.tgz` asset instead and configure
 with `-DGPU=OFF`.
 
-### 4. Build
+#### 4. Build
 
-Build **in `VisionPilot/build`** — `scripts/find_homography_C_matrix.py` resolves
-`../config/H.yaml` relative to the build directory, and the binary looks for `config/` and
-`modules/models/weights/` relative to its working directory.
+Build **in `VisionPilot/build`** — that is where `run_inference.sh` and `build_models.sh`
+look for the binary unless you point `VP_BUILD` elsewhere. The binary itself resolves
+`config/` and `modules/models/weights/` relative to its working directory, and CMake copies
+both into whichever build directory you configure.
 
 ```bash
 cd VisionPilot
@@ -176,12 +225,8 @@ regenerated from `config/H.yaml` on every build. WebRTC is compiled in only when
 Boost.System and nlohmann/json are all found — otherwise CMake warns and the local OpenCV
 window is used instead.
 
-### 5. First run
-
-```bash
-cd VisionPilot/scripts
-./run_inference.sh scene-0796
-```
+On a CPU-only machine, also set `engine.provider = cpu` in `build/config/vision_pilot.conf`
+— `setup.sh --cpu` does that for you.
 
 ## Running
 
@@ -461,13 +506,14 @@ cd VisionPilot/build
 
 | Symptom                                                            | Cause / fix                                                                                                                                     |
 | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Anything during setup or the build                                 | `./setup.sh` from the repository root handles the four rows below; `--clean` retries from scratch                                               |
 | `[engine] ONNXRUNTIME_ROOT is not set`                             | Pass `-DONNXRUNTIME_ROOT=<unpacked ORT dir>` to CMake                                                                                           |
 | `fatal error: coin-or/IpIpoptApplication.hpp: No such file`        | `sudo ln -sfn /usr/include/coin /usr/include/coin-or`                                                                                           |
 | `undefined reference to cppad_...`                                 | Configure with `-DCMAKE_CXX_STANDARD_LIBRARIES="-lcppad_lib"`                                                                                   |
 | `Failed to load libonnxruntime_providers_cuda.so … libcufft.so.11` | `sudo apt install libcufft-12-8 libcurand-12-8 && sudo ldconfig`                                                                                |
+| The compiler is OOM-killed / the machine freezes while building    | Too many parallel jobs for the free RAM. `./setup.sh --jobs 4`, or `make -j4`                                                                   |
 | `Config file not found: vision_pilot.conf`                         | Run the binary from `VisionPilot/build`, not from the source root                                                                               |
 | `Config file not found: autodrive_<x>.onnx`                        | `model.precision` must be `fp32` or `int8`                                                                                                      |
-| `numpy.linalg.LinAlgError: 0-dimensional array given` during build | The C-matrix script needs `../config/H.yaml` — build inside `VisionPilot/build`                                                                 |
 | `FileInterface: read() called past end of speeds data`             | Speed track shorter than the clip; use `run_inference.sh`, which pads it                                                                        |
 | Path or lane overlay at the wrong distance                         | `H.yaml` does not match the camera — pass `--calib` or recalibrate                                                                              |
 | No window appears                                                  | `DISPLAY` unset (e.g. over SSH). Use `--no-window`, or export a display                                                                         |

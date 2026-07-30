@@ -63,9 +63,12 @@
 
 <h2>1. Quick start</h2>
 
-<p>Everything runs through one script. From the repo:</p>
+<p>Two scripts: <code>setup.sh</code> once per machine, <code>run_inference.sh</code> per clip.</p>
 
-<pre><code>cd &lt;repo&gt;/VisionPilot/scripts
+<pre><code><span class="cmt"># once: apt packages, ONNX Runtime, build — see §7</span>
+cd &lt;repo&gt; &amp;&amp; ./setup.sh
+
+cd VisionPilot/scripts
 
 ./run_inference.sh scene-0796                  <span class="cmt"># clean HUD window</span>
 ./run_inference.sh scene-1077 -- --debug-viz   <span class="cmt"># telemetry overlay</span>
@@ -121,11 +124,12 @@ binary from <code>build/</code>. Run <code>./run_inference.sh --help</code> for 
 
 <table class="files">
   <tr><th>Path</th><th>What it is</th></tr>
+  <tr><td>setup.sh</td><td>One-command machine setup: packages, ONNX Runtime, build.</td></tr>
   <tr><td>VisionPilot/scripts/run_inference.sh</td><td>Run inference on any video.</td></tr>
   <tr><td>VisionPilot/scripts/build_models.sh</td><td>Compile the TensorRT engines, one model per process.</td></tr>
   <tr><td>VisionPilot/scripts/quantize_models.py</td><td>Regenerate the int8 weights.</td></tr>
   <tr><td>VisionPilot/scripts/nuscenes_to_visionpilot.py</td><td>Convert nuScenes scenes into clips.</td></tr>
-  <tr><td>VisionPilot/data/nuscenes/*.mp4</td><td>Three converted clips, 30&nbsp;fps, 1600×900.</td></tr>
+  <tr><td>VisionPilot/data/nuscenes/*.mp4</td><td>Five converted clips, 30&nbsp;fps, 1600×900.</td></tr>
   <tr><td>VisionPilot/data/nuscenes/*_speed.txt</td><td>Ego speed, m/s, one value per frame.</td></tr>
   <tr><td>VisionPilot/data/nuscenes/*_H.yaml</td><td>Per-scene ground-plane homography.</td></tr>
   <tr><td>VisionPilot/data/nuscenes/README.md</td><td>Short terminal-side quick reference.</td></tr>
@@ -137,9 +141,11 @@ binary from <code>build/</code>. Run <code>./run_inference.sh --help</code> for 
 
 <table>
   <tr><th>Clip</th><th>Frames</th><th>Length</th><th>Mean speed</th><th>Scene</th></tr>
-  <tr><td>scene-0796</td><td>588</td><td>19.6 s</td><td>12.1 m/s</td><td>Day, big street, car overtaking</td></tr>
-  <tr><td>scene-1077</td><td>599</td><td>19.9 s</td><td>12.6 m/s</td><td>Night, big street, high speed</td></tr>
-  <tr><td>scene-0655</td><td>594</td><td>19.8 s</td><td>8.2 m/s</td><td>Parking lot, bendy bus, jaywalker</td></tr>
+  <tr><td>scene-1077</td><td>600</td><td>20.0 s</td><td>12.6 m/s</td><td>Night, big street, high speed</td></tr>
+  <tr><td>scene-0796</td><td>589</td><td>19.6 s</td><td>12.1 m/s</td><td>Day, big street, car overtaking</td></tr>
+  <tr><td>scene-0655</td><td>595</td><td>19.8 s</td><td>8.2 m/s</td><td>Parking lot, bendy bus, jaywalker</td></tr>
+  <tr><td>scene-0103</td><td>584</td><td>19.5 s</td><td>6.1 m/s</td><td>Many pedestrians, cyclist, turning car</td></tr>
+  <tr><td>scene-0061</td><td>576</td><td>19.2 s</td><td>4.7 m/s</td><td>Construction, left turn, following a van</td></tr>
 </table>
 
 <p>The raw nuScenes v1.0-mini dataset stays outside the repo — on the reference machine at
@@ -288,8 +294,18 @@ int8 engine ever fails to build.</p>
 
 <h2>7. Environment</h2>
 
-<p>Condensed from the top-level <code>README.md</code>, which has the full setup, Docker and
-configuration reference.</p>
+<p><code>setup.sh</code> at the repo root does the whole install: submodules, apt packages,
+the coin-or header link, the ONNX Runtime release matching the installed CUDA toolkit, and
+the CMake build. It prompts for <code>sudo</code> once and is safe to re-run.</p>
+
+<pre><code>cd &lt;repo&gt;
+./setup.sh                          <span class="cmt"># detect the GPU, install, build</span>
+./setup.sh --cpu                    <span class="cmt"># no NVIDIA GPU</span>
+./setup.sh --engines int8 --verify  <span class="cmt"># also build int8 engines, then smoke-test</span>
+./setup.sh --skip-apt --clean       <span class="cmt"># rebuild only, touch nothing system-wide</span></code></pre>
+
+<p>Other flags: <code>--ort-version</code>, <code>--ort-root</code>, <code>--ort-dir</code>,
+<code>--jobs</code>, <code>--webrtc</code>, <code>--ros2</code>. Equivalent by hand:</p>
 
 <pre><code>sudo apt install coinor-libipopt-dev libcppad-dev \
                  libcudnn9-cuda-12 libcufft-12-8 libcurand-12-8
@@ -311,12 +327,10 @@ make -j$(nproc)</code></pre>
 <code>webrtc_on = false</code>, <code>speed_limit = 33.3</code> m/s.</p>
 
 <div class="note">
-  <b>Build inside <code>VisionPilot/build</code>.</b>
-  <code>scripts/find_homography_C_matrix.py</code> resolves <code>../config/H.yaml</code>
-  relative to the build directory, and the binary resolves <code>config/</code> and
-  <code>modules/models/weights/</code> relative to its working directory. A build tree anywhere
-  else fails at the <code>generate_config</code> step with
-  <code>numpy.linalg.LinAlgError: 0-dimensional array given</code>.
+  <b>Build inside <code>VisionPilot/build</code>.</b> That is where the scripts look for the
+  binary unless <code>VP_BUILD</code> says otherwise, and the binary resolves
+  <code>config/</code> and <code>modules/models/weights/</code> relative to its working
+  directory — so run it from the build tree CMake populated.
 </div>
 
 <div class="note">
