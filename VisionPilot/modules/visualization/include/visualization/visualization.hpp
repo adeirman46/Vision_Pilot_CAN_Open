@@ -107,6 +107,8 @@ public:
         const cv::Mat& H_resized,
         double speed_limit_ms = 0.0);
     bool render_frame(const cv::Mat& display_frame);
+    // Key typed into the window during the last render_frame(), or -1.
+    int  last_key() const;
     bool stop() const;
 };
 

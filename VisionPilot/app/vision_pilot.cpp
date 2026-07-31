@@ -12,6 +12,7 @@
 #include <image_preprocessing/image_preprocessor.hpp>
 #include <logging/logger.hpp>
 #include <models/inference.hpp>
+#include <navigation/navigation.hpp>
 #include <planning/planning.hpp>
 #include <visualization/visualization.hpp>
 #include <debug/debug_draw.hpp>
@@ -48,6 +49,8 @@ int main(int argc, char** argv)
         const std::string arg(argv[i]);
         if (arg == "--debug-viz") debug_viz = true;
         else if (arg == "--no-window") show_window = false;
+        else if (arg == "--nav") cfg.navigation.enabled = true;
+        else if (arg == "--no-nav") cfg.navigation.enabled = false;
     }
 
     std::shared_ptr<CameraInterface> camera_interface;
@@ -97,6 +100,19 @@ int main(int argc, char** argv)
     {
         VP_ERROR("Cannot open frame source");
         return 1;
+    }
+
+    // ── Initialize navigation ─────────────────────────────────────────────────
+    // Offline OSM panel drawn to the right of the HUD. It never gates the drive:
+    // a missing map or a phone with no fix only changes what the panel says.
+    navigation::Navigator navigator(cfg.navigation);
+    if (cfg.navigation.enabled)
+    {
+        if (navigator.ready())
+            VP_INFO("[Nav] enabled — %d px panel, %.0f m across",
+                    cfg.navigation.panel_width, cfg.navigation.zoom_m);
+        else
+            VP_WARN("[Nav] enabled but degraded: %s", navigator.error().c_str());
     }
 
     // ── Initialize display ────────────────────────────────────────────────────
@@ -184,7 +200,13 @@ int main(int argc, char** argv)
         }
         if (cfg.visualization_on)
         {
-            visualization.render_frame(display_frame);
+            // Map to the right of the inference view — one composed frame, so the
+            // local window and the WebRTC stream both carry it.
+            navigator.update();
+            visualization.render_frame(navigator.compose(display_frame));
+            // Keys typed into the video window drive the destination box —
+            // press 'd' to open it, Esc to close, 'c' to clear the route.
+            navigator.handle_key(visualization.last_key());
         }
     }
 

@@ -20,9 +20,20 @@ namespace visualization
     {
         if (!show_window_)
             return true;
-        cv::resizeWindow("VisionPilot", display_frame.cols, display_frame.rows);
+        // Resize only when the frame size actually changes. Doing it every frame
+        // fought the window manager, and any window left larger than the image —
+        // which is what happens the moment the map panel widens the frame — is
+        // padded by the toolkit with its own background, the white border.
+        if (display_frame.cols != last_w_ || display_frame.rows != last_h_)
+        {
+            last_w_ = display_frame.cols;
+            last_h_ = display_frame.rows;
+            cv::resizeWindow("VisionPilot", last_w_, last_h_);
+        }
         cv::imshow("VisionPilot", display_frame);
-        cv::waitKey(1);
+        // waitKey doubles as the window's event pump and its keyboard: the key
+        // it returns here is how the destination box gets typed into.
+        last_key_ = cv::waitKey(1);
         return true;
     }
 

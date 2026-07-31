@@ -650,4 +650,9 @@ bool Visualization::render_frame(const cv::Mat& display_frame)
     return visual_interface -> render_frame(display_frame);
 }
 
+int Visualization::last_key() const
+{
+    return visual_interface ? visual_interface->last_key() : -1;
+}
+
 }  // namespace visualization

@@ -16,9 +16,13 @@ namespace visualization
 
         bool render_frame(const cv::Mat& display_frame) override;
         bool stop() override;
+        int  last_key() const override { return last_key_; }
 
     private:
         bool show_window_;
+        int  last_w_ = 0;   // frame size the window was last fitted to
+        int  last_h_ = 0;
+        int  last_key_ = -1;
     };
 }
 

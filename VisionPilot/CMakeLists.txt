@@ -31,6 +31,9 @@ add_custom_target(generate_config ALL
 # Modules
 add_subdirectory(modules/logging)
 
+# Before config: config parses the nav.* keys into navigation::Config.
+add_subdirectory(modules/navigation)
+
 add_subdirectory(modules/config)
 
 add_subdirectory(modules/common)

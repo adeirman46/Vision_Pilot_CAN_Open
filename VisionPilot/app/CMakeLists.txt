@@ -28,6 +28,7 @@ target_link_libraries(VisionPilot
     models           # AutoDrive, AutoSteer, AutoSpeed
     fusion           # LongitudinalFusion, LateralFusion
     planning         # Planner
+    navigation       # Navigator — offline OSM map panel
     vehicle_interface
     camera_interface
     image_preprocessing

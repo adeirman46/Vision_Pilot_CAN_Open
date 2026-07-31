@@ -17,6 +17,7 @@ target_link_libraries(config
     PUBLIC
     engine   # for visionpilot::engine::EngineConfig in VisionPilotConfig
     models
+    navigation   # for navigation::Config in VisionPilotConfig
 )
 
 target_compile_features(config PUBLIC cxx_std_17)

@@ -243,3 +243,9 @@ visionpilot_trt_cache/
 
 # run_inference.sh scratch inputs (padded speed tracks)
 run_inputs/
+
+# Offline OSM maps for the navigation panel: ~10 MB for greater Bandung, and
+# derived data — rebuild locally with scripts/build_osm_map.sh
+VisionPilot/maps/
+*.vpmap
+*.osm.pbf

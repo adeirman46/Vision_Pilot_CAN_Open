@@ -3,6 +3,7 @@
 #include <string>
 #include <engine/onnx_engine.hpp>
 #include <models/inference.hpp>
+#include <navigation/nav_config.hpp>
 
 namespace vpe = visionpilot::engine;
 namespace vpm = visionpilot::models;
@@ -29,6 +30,8 @@ struct Config {
     vpe::Config engine;
     vpm::Config inference;
     SourceConfig      source;
+    // Offline OSM map panel drawn to the right of the inference view
+    navigation::Config navigation;
     // PipelineConfig    pipeline;
     // Print per-frame fusion debug logs
     bool              fusion_debug   = false;

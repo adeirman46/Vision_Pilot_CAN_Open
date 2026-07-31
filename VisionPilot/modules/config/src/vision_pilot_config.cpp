@@ -88,6 +88,28 @@ bool parse_bool(const std::string& s, const std::string& k)
 
 bool file_ok(const std::string& p) { return !p.empty() && std::filesystem::is_regular_file(p); }
 
+// "lat,lon" (whitespace tolerated). Throws on anything else.
+void parse_lat_lon(const std::string& s, const std::string& k, double& lat, double& lon)
+{
+    const auto comma = s.find(',');
+    if (comma == std::string::npos)
+        throw std::runtime_error("Invalid lat,lon for " + k + ": " + s);
+    lat = parse_double(trim(s.substr(0, comma)), k);
+    lon = parse_double(trim(s.substr(comma + 1)), k);
+    if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0)
+        throw std::runtime_error("Out-of-range lat,lon for " + k + ": " + s);
+}
+
+// http://host:port/video → http://host:port. The phone streaming the camera is
+// the same device serving /sensors.json, so its GPS URL comes for free.
+std::string url_origin(const std::string& url)
+{
+    const auto scheme = url.find("://");
+    if (scheme == std::string::npos) return {};
+    const auto slash = url.find('/', scheme + 3);
+    return slash == std::string::npos ? url : url.substr(0, slash);
+}
+
 }  // namespace
 
 SourceMode parse_source_mode(const std::string& v)
@@ -158,6 +180,55 @@ Config load_vision_pilot_config()
     { const std::string raw = optional(kv, "debug.wheel_dir", "");
       cfg.wheel_dir = raw.empty() ? "" : expand_home(raw); }
 
+    // ─── Navigation (offline OSM map panel) ──────────────────────────────────
+    {
+        navigation::Config& nav = cfg.navigation;
+        nav.enabled  = parse_bool(optional(kv, "nav.enabled", "false"), "nav.enabled");
+        nav.map_file = expand_home(optional(kv, "nav.map_file",
+                                            "../maps/bandung-roads.vpmap"));
+        nav.gps_source = navigation::parse_gps_source(
+            optional(kv, "nav.gps_source", "ipwebcam"));
+        // Left empty on purpose: filled in below from the camera stream URL.
+        nav.gps_url     = optional(kv, "nav.gps_url", "");
+        nav.gps_file    = expand_home(optional(kv, "nav.gps_file", ""));
+        nav.gps_rate_hz = parse_double(optional(kv, "nav.gps_rate_hz", "2.0"),
+                                       "nav.gps_rate_hz");
+        parse_lat_lon(optional(kv, "nav.fixed_position", "-6.9175,107.6191"),
+                      "nav.fixed_position", nav.fixed_lat, nav.fixed_lon);
+
+        const std::string dest = optional(kv, "nav.destination", "");
+        if (!dest.empty()) {
+            parse_lat_lon(dest, "nav.destination", nav.dest_lat, nav.dest_lon);
+            nav.has_destination = true;
+            nav.dest_name = optional(kv, "nav.destination_name", "");
+        }
+
+        nav.panel_width = parse_int(optional(kv, "nav.panel_width", "512"),
+                                    "nav.panel_width");
+        // "WxH", or "0" / "none" to keep the plain side-by-side frame.
+        {
+            const std::string raw = optional(kv, "nav.output_size", "1920x1080");
+            if (raw == "0" || raw == "none" || raw == "off") {
+                nav.out_width = nav.out_height = 0;
+            } else {
+                const auto x = raw.find_first_of("xX");
+                if (x == std::string::npos)
+                    throw std::runtime_error("nav.output_size must be WxH, got: " + raw);
+                nav.out_width  = parse_int(trim(raw.substr(0, x)), "nav.output_size");
+                nav.out_height = parse_int(trim(raw.substr(x + 1)), "nav.output_size");
+                if (nav.out_width < 320 || nav.out_height < 240)
+                    throw std::runtime_error("nav.output_size must be at least 320x240");
+            }
+        }
+        nav.zoom_m      = parse_double(optional(kv, "nav.zoom_m", "400"), "nav.zoom_m");
+        nav.heading_up  = parse_bool(optional(kv, "nav.heading_up", "true"),
+                                     "nav.heading_up");
+        if (nav.panel_width < 160)
+            throw std::runtime_error("nav.panel_width must be at least 160 px");
+        if (nav.zoom_m < 50.0)
+            throw std::runtime_error("nav.zoom_m must be at least 50 m");
+    }
+
     // Load ROS2 config config
 #ifdef ENABLE_ROS2_INTERFACE
     kv = parse_conf(find_config("vision_pilot_ros2.conf"));
@@ -191,6 +262,37 @@ Config load_vision_pilot_config()
 
         cfg.source.video_realtime= parse_bool(optional(kv, "source.video_realtime", "true"), "source.video_realtime");
         cfg.source.video_loop    = parse_bool(optional(kv, "source.video_loop",     "false"), "source.video_loop");
+    }
+
+    // IP Webcam serves position and frames off one host and one port, so an
+    // unset nav.gps_url just means "wherever the stream is". phyphox is a
+    // separate app on its own port, so it always needs the URL spelled out.
+    if (cfg.navigation.gps_url.empty() &&
+        cfg.navigation.gps_source == navigation::GpsSource::IpWebcam &&
+        is_stream_url(cfg.source.input_video))
+        cfg.navigation.gps_url = url_origin(cfg.source.input_video);
+
+    // A position source that cannot work here degrades navigation, it does not
+    // stop VisionPilot: replaying a clip with the config still pointing at the
+    // phone must not refuse to drive.
+    if (cfg.navigation.enabled) {
+        navigation::Config& nav = cfg.navigation;
+        if (nav.gps_source == navigation::GpsSource::IpWebcam && nav.gps_url.empty()) {
+            nav.degraded_reason =
+                "nav.gps_source = ipwebcam but no nav.gps_url, and source.input_video "
+                "is not a stream URL";
+            nav.gps_source = navigation::GpsSource::None;
+        } else if (nav.gps_source == navigation::GpsSource::Phyphox &&
+                   nav.gps_url.empty()) {
+            nav.degraded_reason =
+                "nav.gps_source = phyphox needs nav.gps_url — phyphox is a separate "
+                "app on its own port, e.g. http://172.27.74.24:8080";
+            nav.gps_source = navigation::GpsSource::None;
+        } else if (nav.gps_source == navigation::GpsSource::File &&
+                   !file_ok(nav.gps_file)) {
+            nav.degraded_reason = "nav.gps_file not found: " + nav.gps_file;
+            nav.gps_source = navigation::GpsSource::None;
+        }
     }
 
     return cfg;
