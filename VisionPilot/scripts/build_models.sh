@@ -93,8 +93,11 @@ EOF
 fi
 
 CACHE_DIR="$(awk -F= '/^engine\.cache_dir/ {gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2}' "$MAIN_CONF")"
+CACHE_DIR="${CACHE_DIR:-../trt_cache}"
 CACHE_DIR="${CACHE_DIR/#\~/$HOME}"
-CACHE_DIR="${CACHE_DIR:-/tmp/visionpilot_trt_cache}"
+# A relative cache_dir is resolved against the build directory, so it means the same thing
+# here as it does to build_trt_engines, which runs with that as its cwd.
+case "$CACHE_DIR" in /*) ;; *) CACHE_DIR="$BUILD_DIR/$CACHE_DIR" ;; esac
 
 if [ "$CLEAN" = "true" ]; then
     echo "removing cached ${PRECISION} engines in $CACHE_DIR"

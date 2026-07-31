@@ -73,7 +73,7 @@ through C. Getting `H` right is what makes distances and lane geometry line up.
 | [VisionPilot/modules/models/weights/](VisionPilot/modules/models/weights/) | Shipped ONNX weights, fp32 and int8                                  |
 | [VisionPilot/config/](VisionPilot/config/)                                 | Runtime config, camera homography, CAN DBC                           |
 | [VisionPilot/tools/](VisionPilot/tools/)                                   | `build_trt_engines` — builds TensorRT engines one process at a time  |
-| [VisionPilot/scripts/](VisionPilot/scripts/)                               | `run_inference.sh`, `build_models.sh`, quantiser, nuScenes converter |
+| [VisionPilot/scripts/](VisionPilot/scripts/)                               | `run_inference.sh`, `inference_cam.sh`, `build_models.sh`, quantiser, nuScenes converter |
 | [VisionPilot/data/nuscenes/](VisionPilot/data/nuscenes/)                   | Five bundled nuScenes clips with speed tracks and calibration        |
 | [VisionPilot/docker/](VisionPilot/docker/)                                 | GPU and CPU images plus `build.sh` / `run.sh`                        |
 | [VisionPilot/docs/](VisionPilot/docs/)                                     | [nuScenes how-to (PDF)](VisionPilot/docs/nuscenes_howto.pdf)         |
@@ -270,9 +270,30 @@ cd VisionPilot/build
 
 ### On a vehicle or a live camera
 
-Set `source.mode = v4l2` in [VisionPilot/config/vision_pilot.conf](VisionPilot/config/vision_pilot.conf)
-and point `source.v4l2_device` at the camera. Read [Sensing/README.md](Sensing/README.md) for
-camera choice and mounting, and calibrate before trusting any distance on screen.
+```bash
+cd VisionPilot/scripts
+./inference_cam.sh                                   # default stream URL (see --help)
+./inference_cam.sh http://192.168.1.5:8080/video     # phone running IP Webcam
+./inference_cam.sh rtsp://192.168.1.9/stream1        # an RTSP camera
+./inference_cam.sh 0                                 # local /dev/video0
+./inference_cam.sh --probe                           # just check the source opens
+```
+
+`inference_cam.sh` is `run_inference.sh` for live sources: a URL runs through video mode
+against the stream, `/dev/videoN` (or a bare index) runs through v4l2 mode. It synthesises the
+ego-speed track a live camera cannot supply — `--speed-const <m/s>`, lasting `--hours <h>` —
+and takes the same `--calib`, `--precision`, `--provider` and `-- <binary args>` options. A
+dropped stream is retried for ten seconds before the run gives up.
+
+No phone or camera to hand? Any Android device running **IP Webcam** serves
+`http://<phone-ip>:8080/video` as MJPEG over Wi-Fi, which is what the default URL points at.
+
+Otherwise, set `source.mode = v4l2` in
+[VisionPilot/config/vision_pilot.conf](VisionPilot/config/vision_pilot.conf) and point
+`source.v4l2_device` at the camera by hand. Read [Sensing/README.md](Sensing/README.md) for
+camera choice and mounting, and calibrate before trusting any distance on screen — the shipped
+`H.yaml` is the nuScenes front camera, so distances off any other lens are meaningless until
+you pass your own `--calib`.
 
 > **The CAN path is still a stub.** In `v4l2` mode the vehicle interface is
 > `modules/sensing/vehicle_interface/src/can_interface.cpp`, whose `read()` returns `0.0` and
@@ -291,7 +312,7 @@ Three plain `key = value` files in [VisionPilot/config/](VisionPilot/config/), a
 | File                     | When it is read                                                 |
 | ------------------------ | --------------------------------------------------------------- |
 | `vision_pilot.conf`      | Always                                                          |
-| `vision_pilot_test.conf` | Only when `source.mode = video` (written by `run_inference.sh`) |
+| `vision_pilot_test.conf` | Only when `source.mode = video` (written by `run_inference.sh` / `inference_cam.sh`) |
 | `vision_pilot_ros2.conf` | Only in a build with `ENABLE_ROS2_INTERFACE=ON`                 |
 
 Because CMake copies `config/` into `build/config/` at configure time, **the copy the binary
@@ -312,7 +333,7 @@ cd VisionPilot/build && cmake ..     # re-copies config/ into build/config/
 | `source.v4l2_fps`         | `10`                         | Capture rate in `v4l2` mode                                                     |
 | `engine.provider`         | `cpu`                        | `cpu`, `cuda` or `tensorrt`                                                     |
 | `engine.device_id`        | `0`                          | GPU index                                                                       |
-| `engine.cache_dir`        | `/tmp/visionpilot_trt_cache` | TensorRT engine + timing cache                                                  |
+| `engine.cache_dir`        | `../trt_cache`               | TensorRT engine + timing cache; relative to the build directory                 |
 | `engine.workspace_gb`     | `1.0`                        | TensorRT workspace budget                                                       |
 | `engine.gpu_mem_limit_gb` | `0` (off)                    | Cap on GPU memory VisionPilot's arenas may hold; it needs ~0.6 GB               |
 | `model.precision`         | `fp32`                       | `fp32` or `int8` — picks the weights file                                       |
@@ -439,8 +460,10 @@ the config on the precision it built so the next run just works.
 `trt_builder_optimization_level` is pinned to 3 (TensorRT's own default) instead of the
 exhaustive 5, which is what drove the peak.
 
-`/tmp/visionpilot_trt_cache` is the default cache, and `/tmp` is cleared on reboot — point
-`engine.cache_dir` somewhere persistent to keep engines across restarts.
+Engines are cached in `VisionPilot/trt_cache`, which `.gitignore` already covers, so they
+survive both a reboot and a `rm -rf build`. `engine.cache_dir` sets it: a relative path is
+resolved against the build directory, since that is where VisionPilot runs from. Avoid
+`/tmp` — systemd empties it on every boot, and the engines have to be rebuilt afterwards.
 
 ### Accuracy
 
@@ -514,7 +537,8 @@ cd VisionPilot/build
 | The compiler is OOM-killed / the machine freezes while building    | Too many parallel jobs for the free RAM. `./setup.sh --jobs 4`, or `make -j4`                                                                   |
 | `Config file not found: vision_pilot.conf`                         | Run the binary from `VisionPilot/build`, not from the source root                                                                               |
 | `Config file not found: autodrive_<x>.onnx`                        | `model.precision` must be `fp32` or `int8`                                                                                                      |
-| `FileInterface: read() called past end of speeds data`             | Speed track shorter than the clip; use `run_inference.sh`, which pads it                                                                        |
+| `FileInterface: read() called past end of speeds data`             | Speed track shorter than the clip; use `run_inference.sh`, which pads it. On a live camera the run outlasted `inference_cam.sh --hours`         |
+| `stream stalled — reconnecting to …`                               | The live source dropped frames. It retries for ten seconds; check the phone is awake and on the same Wi-Fi                                      |
 | Path or lane overlay at the wrong distance                         | `H.yaml` does not match the camera — pass `--calib` or recalibrate                                                                              |
 | No window appears                                                  | `DISPLAY` unset (e.g. over SSH). Use `--no-window`, or export a display                                                                         |
 | A config change is ignored                                         | You edited `config/` but the binary reads `build/config/`                                                                                       |

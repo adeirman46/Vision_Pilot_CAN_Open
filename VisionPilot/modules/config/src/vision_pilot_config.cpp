@@ -98,6 +98,14 @@ SourceMode parse_source_mode(const std::string& v)
     throw std::runtime_error("Invalid source.mode: '" + v + "'. Use video|ros2|v4l2 (or 0/1/2)");
 }
 
+bool is_stream_url(const std::string& value)
+{
+    for (const char* scheme : {"http://", "https://", "rtsp://", "rtmp://",
+                               "udp://", "tcp://", "rtp://"})
+        if (value.rfind(scheme, 0) == 0) return true;
+    return false;
+}
+
 std::string source_label(const SourceConfig& source)
 {
     switch (source.mode) {
@@ -117,7 +125,7 @@ Config load_vision_pilot_config()
     cfg.engine.provider     = optional(kv, "engine.provider",     "cpu");
     cfg.engine.precision    = optional(kv, "model.precision",    "fp32");
     cfg.engine.device_id    = parse_int(optional(kv, "engine.device_id", "0"), "engine.device_id");
-    cfg.engine.cache_dir    = expand_home(optional(kv, "engine.cache_dir", "/tmp/visionpilot_trt_cache"));
+    cfg.engine.cache_dir    = expand_home(optional(kv, "engine.cache_dir", "../trt_cache"));
     cfg.engine.workspace_gb = parse_double(optional(kv, "engine.workspace_gb", "1.0"), "engine.workspace_gb");
     cfg.engine.gpu_mem_limit_gb = parse_double(
         optional(kv, "engine.gpu_mem_limit_gb", "0.0"), "engine.gpu_mem_limit_gb");
@@ -167,7 +175,8 @@ Config load_vision_pilot_config()
         cfg.source.input_video = optional(kv, "source.input_video", "");
         if (cfg.source.input_video.empty())
             throw std::runtime_error("source.mode=video requires source.input_video");
-        if (!file_ok(cfg.source.input_video))
+        // A stream URL has nothing to stat — leave it to the camera interface to open.
+        if (!is_stream_url(cfg.source.input_video) && !file_ok(cfg.source.input_video))
             throw std::runtime_error("source.video_path not found: " + cfg.source.input_video);
         // Load input vehicle speed config
         cfg.source.input_vehicle_speed = optional(kv, "source.input_vehicle_speed", "");

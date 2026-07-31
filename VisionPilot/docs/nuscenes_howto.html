@@ -287,8 +287,9 @@ model per process (peak near 5&nbsp;GB) under a systemd memory cap:</p>
 ./build_models.sh --mem-max 8G --clean   <span class="cmt"># tighter cap, fresh build</span></code></pre>
 
 <p>It leaves the config on the precision it built, so the next run starts in seconds.
-<code>/tmp/visionpilot_trt_cache</code> is the default cache and <code>/tmp</code> is cleared
-on reboot — set <code>engine.cache_dir</code> elsewhere to keep engines. Per-model overrides
+Engines are cached in <code>VisionPilot/trt_cache</code> (gitignored), so they survive a
+reboot; <code>engine.cache_dir</code> moves it, relative paths resolving against the build
+directory. Avoid <code>/tmp</code> — systemd empties it on boot. Per-model overrides
 (<code>model.precision.autodrive</code> and friends) let one model fall back to fp32 if its
 int8 engine ever fails to build.</p>
 

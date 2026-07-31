@@ -17,9 +17,14 @@ public:
     std::vector<std::string> get_overlay() const override;
 
 private:
+    // Reconnect a dropped live stream. Returns false once the retries are spent,
+    // leaving cap_ closed.
+    bool reopen_stream();
+
     std::string path_;
     bool loop_;
     bool realtime_;
+    bool stream_;
     cv::VideoCapture cap_;
     std::chrono::duration<double> frame_period_{0};
 };

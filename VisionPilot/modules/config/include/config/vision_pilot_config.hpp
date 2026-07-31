@@ -67,5 +67,10 @@ std::string resolve_vision_pilot_config_path(int argc, char** argv);
 
 SourceMode parse_source_mode(const std::string& value);
 
+// True when a source.input_video value is a network stream (http://, rtsp://, …)
+// rather than a path on disk — a live source has no file to stat, no frame count
+// and no end.
+bool is_stream_url(const std::string& value);
+
 // Short label for debug overlay (video / device path / ROS topic).
 std::string source_label(const SourceConfig& source);

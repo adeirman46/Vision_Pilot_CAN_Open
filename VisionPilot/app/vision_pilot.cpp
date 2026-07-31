@@ -111,7 +111,16 @@ int main(int argc, char** argv)
         auto [ok, frame] = camera_interface->get_latest_frame();
         if (!ok || frame.empty())
         {
-            if (cfg.source.mode == SourceMode::Video && !cfg.source.video_loop) break;
+            // The source closed itself: a live stream that never came back.
+            if (!camera_interface->is_device_open())
+            {
+                VP_ERROR("Frame source closed — stopping");
+                break;
+            }
+            // A file that ran out of frames is done; a live stream just dropped one.
+            if (cfg.source.mode == SourceMode::Video && !cfg.source.video_loop
+                && !is_stream_url(cfg.source.input_video))
+                break;
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }

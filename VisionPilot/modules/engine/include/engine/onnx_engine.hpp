@@ -19,7 +19,9 @@ struct Config {
 
     // Used only when provider == "tensorrt"
     std::string precision    = "fp32";   // "fp32" | "fp16"
-    std::string cache_dir    = "/tmp/visionpilot_trt_cache";
+    // Relative to the process working directory (the build directory). Not /tmp: systemd
+    // empties that on every boot, so the engines would need recompiling after a restart.
+    std::string cache_dir    = "../trt_cache";
     double      workspace_gb = 1.0;
 
     // GPU device index (cuda and tensorrt)
