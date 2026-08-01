@@ -32,6 +32,9 @@ struct Config {
     SourceConfig      source;
     // Offline OSM map panel drawn to the right of the inference view
     navigation::Config navigation;
+    // True once a real vehicle speed arrives over CAN. While false the HUD
+    // shows a dash instead of the synthesised constant the planner is fed.
+    bool vehicle_speed_valid = false;
     // PipelineConfig    pipeline;
     // Print per-frame fusion debug logs
     bool              fusion_debug   = false;

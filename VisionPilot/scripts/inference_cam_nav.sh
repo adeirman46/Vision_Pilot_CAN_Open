@@ -44,11 +44,19 @@
 #   --dest-name <text>   label for that destination on the panel
 #   --map <file>         .vpmap to load. Default VisionPilot/maps/bandung-roads.vpmap
 #   --zoom <m>           metres across the panel width (400)
-#   --panel <px>         panel width in px (512)
+#   --light              light / daytime map ('t' toggles it while running)
+#   --opencv             use the old OpenCV highgui window instead of the Qt
+#                        front-end. The Qt one is the default: a real search bar
+#                        across the top of the map, buttons for theme / heading /
+#                        zoom, and a map that repaints on its own timer so it
+#                        stays smooth while the models run.
+#   --panel <px>         map panel width in px (760)
 #   --north-up           north-up map instead of heading-up
-#   --output <WxH>       canvas size (1920x1080). The camera view and the panel
-#                        are composed onto exactly this, so the window matches
-#                        the screen and nothing pads it with a white border.
+#   --output <WxH|fit>   canvas size. Default: the screen minus room for the
+#                        title bar, so the window manager never has to shrink
+#                        the window and the toolkit never pads it with white.
+#                        "fit" instead derives the height so the camera view
+#                        fills its half exactly — no black bars, short window.
 #   --check              check the map, the camera and the GPS feed, then exit
 #
 # Camera options (same meaning as inference_cam.sh):
@@ -108,10 +116,12 @@ DEST=""
 DEST_NAME=""
 FIND=""
 MAP_FILE=""
-OUTPUT_SIZE="1920x1080"
+OUTPUT_SIZE=""            # empty = fit the screen; or WxH, or "fit"
 ZOOM="400"
-PANEL="512"
+PANEL="760"
 HEADING_UP="true"
+DARK="true"
+USE_QT="true"    # --opencv falls back to the old highgui window
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -139,6 +149,10 @@ while [ $# -gt 0 ]; do
         --panel)       [ $# -ge 2 ] || { echo "error: --panel needs a value" >&2; exit 1; }
                        PANEL="$2"; shift 2 ;;
         --north-up)    HEADING_UP="false"; shift ;;
+        --qt)          USE_QT="true"; shift ;;
+        --opencv)      USE_QT="false"; shift ;;
+        --light)       DARK="false"; shift ;;
+        --dark)        DARK="true"; shift ;;
         --check)       CHECK="true"; shift ;;
         --ask)         ASK="true"; shift ;;
         --no-ask)      ASK="false"; shift ;;
@@ -437,6 +451,35 @@ else
     set_conf source.mode "video" "$MAIN_CONF"
 fi
 
+# ── Canvas size ──────────────────────────────────────────────────────────────
+# With no --output, size the canvas so the camera view exactly fills the space
+# left of the panel and nothing is padded. The HUD frame is 2:1 (1024x512), so
+# for a canvas W wide with a P-wide panel the camera needs (W - P) / 2 of height
+# — make that the canvas height and there are no black bars anywhere.
+if [ "$OUTPUT_SIZE" = "fit" ]; then
+    # Height derived so the 2:1 camera view fills its half exactly: no black
+    # bars anywhere, at the cost of a short window.
+    CANVAS_W=1920
+    CANVAS_H=$(( (CANVAS_W - PANEL) / 2 ))
+    OUTPUT_SIZE="${CANVAS_W}x${CANVAS_H}"
+    FIT_DESC=" (camera-fitted, no black bars)"
+elif [ -z "$OUTPUT_SIZE" ]; then
+    # Fit the screen's usable area. A canvas as tall as the screen does not fit
+    # once the title bar is added, so the window manager shrinks the window and
+    # the toolkit pads the leftover with its own background — that is the white
+    # border. Leaving room for the decoration means there is nothing to pad.
+    SCREEN="$(xdotool getdisplaygeometry 2>/dev/null || true)"
+    SCREEN_W="${SCREEN%% *}"
+    SCREEN_H="${SCREEN##* }"
+    case "$SCREEN_W$SCREEN_H" in *[!0-9]*|"") SCREEN_W=1920; SCREEN_H=1080 ;; esac
+    CANVAS_W="$SCREEN_W"
+    CANVAS_H=$(( SCREEN_H - 96 ))
+    OUTPUT_SIZE="${CANVAS_W}x${CANVAS_H}"
+    FIT_DESC=" (fits the screen, no white border)"
+else
+    FIT_DESC=""
+fi
+
 # ── Navigation ───────────────────────────────────────────────────────────────
 # nav.enabled is deliberately NOT written: navigation is turned on with the
 # binary's --nav flag, so inference_cam.sh keeps giving a camera-only window.
@@ -446,6 +489,7 @@ set_conf nav.gps_url     "$GPS_URL"  "$MAIN_CONF"
 set_conf nav.zoom_m      "$ZOOM"     "$MAIN_CONF"
 set_conf nav.panel_width "$PANEL"    "$MAIN_CONF"
 set_conf nav.heading_up  "$HEADING_UP" "$MAIN_CONF"
+set_conf nav.dark        "$DARK"       "$MAIN_CONF"
 set_conf nav.output_size "$OUTPUT_SIZE" "$MAIN_CONF"
 set_conf nav.gps_file    "$GPS_FILE" "$MAIN_CONF"
 [ -n "$FIXED_POS" ] && set_conf nav.fixed_position   "$FIXED_POS" "$MAIN_CONF"
@@ -516,10 +560,17 @@ echo "   calib:  $CALIB_DESC"
 echo "   model:  $PRECISION_DESC on $PROVIDER_DESC"
 echo "   map:    $MAP_FILE"
 echo "   gps:    $NAV_DESC"
-echo "   layout: ${OUTPUT_SIZE} canvas, ${PANEL}px panel, ${ZOOM} m across, $([ "$HEADING_UP" = "true" ] && echo "heading up" || echo "north up")"
+echo "   layout: ${OUTPUT_SIZE}${FIT_DESC} canvas, ${PANEL}px panel, ${ZOOM} m across, $([ "$HEADING_UP" = "true" ] && echo "heading up" || echo "north up")"
 echo "   extra:  ${VP_ARGS[*]:-<none>}"
 echo "   stop with Ctrl-C"
 echo "=================================================="
 
 cd "$BUILD_DIR"
+if [ "$USE_QT" = "true" ]; then
+    [ -x "$BUILD_DIR/VisionPilotQt" ] || {
+        echo "error: $BUILD_DIR/VisionPilotQt not built" >&2
+        echo "       Needs Qt5: sudo apt-get install -y qtbase5-dev, then rebuild." >&2
+        exit 1; }
+    exec ./VisionPilotQt --nav ${VP_ARGS[@]+"${VP_ARGS[@]}"}
+fi
 exec ./VisionPilot --nav ${VP_ARGS[@]+"${VP_ARGS[@]}"}

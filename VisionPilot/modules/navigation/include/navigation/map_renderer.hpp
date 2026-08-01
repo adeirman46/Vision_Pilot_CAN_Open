@@ -31,6 +31,11 @@ struct MapView {
 
     double zoom_m     = 400.0;
     bool   heading_up = true;
+    bool   dark       = true;   // false = light / daytime palette
+
+    // Map dragged away from the car, in panel pixels.
+    double pan_x = 0.0, pan_y = 0.0;
+    bool   panned = false;
 
     // Destination box, typed into the video window itself.
     bool                       input_active = false;

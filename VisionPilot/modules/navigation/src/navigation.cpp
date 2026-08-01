@@ -23,6 +23,9 @@ uint64_t now_ms()
 // Don't thrash the router: a rerouting storm at a junction is worse than being
 // briefly off route.
 constexpr uint64_t kRerouteCooldownMs = 8000;
+// A panned map stops following the car. Snap back on its own so nobody is left
+// staring at the wrong part of town mid-drive.
+constexpr uint64_t kPanIdleResetMs   = 12000;
 constexpr int      kOffRouteFixes     = 4;      // consecutive fixes off the line
 
 }  // namespace
@@ -223,6 +226,19 @@ bool Navigator::handle_key(int key)
             clear_destination();
             return true;
         }
+        if (k == 't' || k == 'T') {          // light <-> dark map
+            cfg_.dark = !cfg_.dark;
+            VP_INFO("[Nav] map theme: %s", cfg_.dark ? "dark" : "light");
+            return true;
+        }
+        if (k == '+' || k == '=') {
+            cfg_.zoom_m = std::clamp(cfg_.zoom_m * 0.8, 50.0, 8000.0);
+            return true;
+        }
+        if (k == '-' || k == '_') {
+            cfg_.zoom_m = std::clamp(cfg_.zoom_m * 1.25, 50.0, 8000.0);
+            return true;
+        }
         return false;
     }
 
@@ -280,9 +296,78 @@ bool Navigator::handle_key(int key)
     }
 }
 
+// ─── Pan and zoom ────────────────────────────────────────────────────────────
+
+void Navigator::recenter()
+{
+    pan_x_ = pan_y_ = 0.0;
+    panned_ = false;
+}
+
+void Navigator::pan_by(double dx, double dy)
+{
+    pan_x_ += dx;
+    pan_y_ += dy;
+    panned_ = std::hypot(pan_x_, pan_y_) > 12.0;
+    last_pan_ms_ = now_ms();
+}
+
+void Navigator::handle_mouse(int x, int y, bool left_down, int wheel)
+{
+    if (!cfg_.enabled || !map_.loaded()) return;
+
+    const bool in_panel = panel_rect_.width > 0 && panel_rect_.contains(cv::Point(x, y));
+
+    if (wheel != 0 && in_panel) {
+        // Multiplicative, so each notch feels the same at every scale. Clamped
+        // to what the extract can usefully show: below ~50 m the map is one
+        // road, above ~8 km it is a grey smear.
+        const double factor = wheel > 0 ? 0.8 : 1.25;
+        cfg_.zoom_m = std::clamp(cfg_.zoom_m * factor, 50.0, 8000.0);
+        last_pan_ms_ = now_ms();
+    }
+
+    if (left_down && !dragging_ && in_panel && !input_active_) {
+        dragging_ = true;
+        drag_last_x_ = x;
+        drag_last_y_ = y;
+    } else if (!left_down) {
+        dragging_ = false;
+    }
+
+    if (dragging_) {
+        pan_x_ += x - drag_last_x_;
+        pan_y_ += y - drag_last_y_;
+        drag_last_x_ = x;
+        drag_last_y_ = y;
+        // A drag that ends up back on the car is the natural "follow me again".
+        panned_ = std::hypot(pan_x_, pan_y_) > 12.0;
+        last_pan_ms_ = now_ms();
+    }
+
+    if (panned_ && !dragging_ && last_pan_ms_ != 0 &&
+        now_ms() - last_pan_ms_ > kPanIdleResetMs)
+        recenter();
+}
+
 std::optional<GpsFix> Navigator::fix() const { return fix_; }
 
 int Navigator::speed_limit_kph() const { return speed_limit_kph_; }
+
+bool Navigator::has_route() const
+{
+    std::lock_guard<std::mutex> lock(route_mtx_);
+    return route_.valid;
+}
+
+cv::Mat Navigator::panel(int width, int height)
+{
+    const int saved = cfg_.panel_width;
+    cfg_.panel_width = width;
+    cv::Mat out = panel(height);
+    cfg_.panel_width = saved;
+    return out;
+}
 
 cv::Mat Navigator::panel(int height)
 {
@@ -302,11 +387,15 @@ cv::Mat Navigator::panel(int height)
     view.routing         = routing_;
     view.zoom_m          = cfg_.zoom_m;
     view.heading_up      = cfg_.heading_up;
+    view.dark            = cfg_.dark;
     view.input_active    = input_active_;
     view.input_text      = input_text_;
     view.input_hits      = input_hits_;
     view.input_sel       = input_sel_;
     view.input_note      = input_note_;
+    view.pan_x           = pan_x_;
+    view.pan_y           = pan_y_;
+    view.panned          = panned_;
 
     // Hold the lock across the render: the worker may swap the route in, and the
     // renderer walks its node list.
@@ -336,6 +425,7 @@ cv::Mat Navigator::compose(const cv::Mat& frame)
         cv::Mat out(left.rows, left.cols + right.cols, CV_8UC3);
         left.copyTo(out(cv::Rect(0, 0, left.cols, left.rows)));
         right.copyTo(out(cv::Rect(left.cols, 0, right.cols, right.rows)));
+        panel_rect_ = cv::Rect(left.cols, 0, right.cols, right.rows);
 
         // The destination box goes over the finished frame, not inside the panel:
         // it is a modal, and it gets the whole window.
@@ -346,6 +436,7 @@ cv::Mat Navigator::compose(const cv::Mat& frame)
             box.input_hits   = input_hits_;
             box.input_sel    = input_sel_;
             box.input_note   = input_note_;
+            box.dark         = cfg_.dark;
             draw_destination_box(out, box);
         }
         return out;
@@ -365,8 +456,12 @@ cv::Mat Navigator::compose(const cv::Mat& frame)
     if (right.cols != panel_w || right.rows != H)
         cv::resize(right, right, cv::Size(panel_w, H), 0, 0, cv::INTER_AREA);
     right.copyTo(canvas(cv::Rect(W - panel_w, 0, panel_w, H)));
+    panel_rect_ = cv::Rect(W - panel_w, 0, panel_w, H);
 
-    // Camera view scaled to fit its half, aspect preserved, centred.
+    // Camera view scaled to fit its half, aspect preserved, centred. Any
+    // leftover is black rather than the toolkit's white, and --output can be
+    // sized so there is no leftover at all: height = (width - panel) / 2 for a
+    // 2:1 camera frame.
     const int cam_w = W - panel_w;
     const double scale = std::min(static_cast<double>(cam_w) / left.cols,
                                   static_cast<double>(H) / left.rows);
@@ -387,6 +482,7 @@ cv::Mat Navigator::compose(const cv::Mat& frame)
         box.input_hits   = input_hits_;
         box.input_sel    = input_sel_;
         box.input_note   = input_note_;
+        box.dark         = cfg_.dark;
         draw_destination_box(canvas, box);
     }
 

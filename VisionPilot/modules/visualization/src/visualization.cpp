@@ -285,9 +285,10 @@ static void draw_cipo_boxes(cv::Mat& img, const ProductionView& view) {
 }
 
 // ─── Draw: ego speed readout (top-centre) ────────────────────────────────────
-static void draw_speed(cv::Mat& img, double speed_ms) {
+static void draw_speed(cv::Mat& img, double speed_ms, bool valid) {
     char num_buf[32];
-    std::snprintf(num_buf, sizeof(num_buf), "%.0f", speed_ms * 3.6);
+    if (valid) std::snprintf(num_buf, sizeof(num_buf), "%.0f", speed_ms * 3.6);
+    else       std::snprintf(num_buf, sizeof(num_buf), "-");
     const char* unit_buf = "kph";
 
     int bl = 0;
@@ -513,7 +514,7 @@ static cv::Mat draw_production_frame(cv::Mat& frame, const ProductionView& view)
     draw_cipo_boxes(display_frame, view);
     draw_ad_only_cipo(display_frame, view);
     draw_alerts(display_frame, view);
-    draw_speed(display_frame, view.ego_speed_ms);
+    draw_speed(display_frame, view.ego_speed_ms, view.ego_speed_valid);
     draw_speed_limit(display_frame, view.speed_limit_ms);
 
     return display_frame;
@@ -526,10 +527,12 @@ ProductionView ProductionView::from(
     const Plan& plan,
     double ego_speed_ms,
     const cv::Mat& H_resized,
-    double speed_limit_ms)
+    double speed_limit_ms,
+    bool ego_speed_valid)
 {
     ProductionView pv;
     pv.ego_speed_ms   = ego_speed_ms;
+    pv.ego_speed_valid = ego_speed_valid;
     pv.speed_limit_ms = speed_limit_ms;
     pv.acceleration   = plan.acceleration;
 
@@ -592,9 +595,11 @@ cv::Mat ProductionView::visualize(
     const Plan& plan,
     double ego_speed_ms,
     const cv::Mat& H_resized,
-    double speed_limit_ms)
+    double speed_limit_ms,
+    bool ego_speed_valid)
 {
-    return from(result, plan, ego_speed_ms, H_resized, speed_limit_ms).render(frame);
+    return from(result, plan, ego_speed_ms, H_resized, speed_limit_ms,
+                ego_speed_valid).render(frame);
 }
 
 // ─── Plain frame display (warm-up / no inference yet) ────────────────────────
@@ -640,9 +645,11 @@ cv::Mat Visualization::build_frame(cv::Mat& frame,
         const Plan& plan,
         double ego_speed_ms,
         const cv::Mat& H_resized,
-        double speed_limit_ms)
+        double speed_limit_ms,
+        bool ego_speed_valid)
 {
-    return ProductionView::from(result, plan, ego_speed_ms, H_resized, speed_limit_ms).render(frame);
+    return ProductionView::from(result, plan, ego_speed_ms, H_resized, speed_limit_ms,
+                                ego_speed_valid).render(frame);
 }
 
 bool Visualization::render_frame(const cv::Mat& display_frame)
@@ -653,6 +660,12 @@ bool Visualization::render_frame(const cv::Mat& display_frame)
 int Visualization::last_key() const
 {
     return visual_interface ? visual_interface->last_key() : -1;
+}
+
+VisualInterface::MouseState Visualization::mouse()
+{
+    return visual_interface ? visual_interface->mouse()
+                            : VisualInterface::MouseState{};
 }
 
 }  // namespace visualization

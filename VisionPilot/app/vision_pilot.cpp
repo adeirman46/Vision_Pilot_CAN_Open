@@ -195,7 +195,18 @@ int main(int argc, char** argv)
                 if (debug_viz)
                     vd::visualize(resized, *r, source_label(cfg.source), cfg.wheel_dir, pipeline.H_world2resized());
                 else
-                    display_frame = visualization.build_frame(resized, *r, plan, ego_v, pipeline.H_resized(), cfg.speed_limit);
+                {
+                    // Speed limit comes from the map's road match, not the
+                    // planner's global cap: "MAX 120" on a 30 km/h kampung
+                    // street is worse than showing nothing.
+                    const int map_kph = navigator.speed_limit_kph();
+                    const double limit_ms = map_kph > 0 ? map_kph / 3.6 : 0.0;
+                    // Vehicle speed is synthesised until CAN is wired up; the
+                    // HUD shows a dash rather than dressing it up as a reading.
+                    display_frame = visualization.build_frame(
+                        resized, *r, plan, ego_v, pipeline.H_resized(), limit_ms,
+                        cfg.vehicle_speed_valid);
+                }
             }
         }
         if (cfg.visualization_on)
@@ -207,6 +218,13 @@ int main(int argc, char** argv)
             // Keys typed into the video window drive the destination box —
             // press 'd' to open it, Esc to close, 'c' to clear the route.
             navigator.handle_key(visualization.last_key());
+            // Wheel zooms the map. Dragging is deliberately not offered: the
+            // panel can only repaint as fast as inference produces frames, and
+            // a map that follows the mouse in 40 ms steps feels broken. Zoom
+            // is a discrete action, so it does not suffer the same way.
+            const auto m = visualization.mouse();
+            navigator.handle_mouse(m.x, m.y, false, m.wheel);
+
         }
     }
 

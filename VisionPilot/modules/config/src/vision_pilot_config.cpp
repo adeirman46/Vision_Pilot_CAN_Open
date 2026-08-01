@@ -173,6 +173,9 @@ Config load_vision_pilot_config()
     cfg.speed_limit = parse_double(optional(kv, "speed_limit", ""), "speed_limit");
     cfg.Lf = parse_double(optional(kv, "Lf", ""), "Lf");
 
+    cfg.vehicle_speed_valid = parse_bool(
+        optional(kv, "vehicle.speed_valid", "false"), "vehicle.speed_valid");
+
     cfg.visualization_on = parse_bool(optional(kv, "visualization_on", "false"), "visualization_on");
     cfg.webrtc_on = parse_bool(optional(kv, "webrtc_on", "false"), "webrtc_on");
     cfg.webrtc_port =  parse_int(optional(kv, "webrtc_port", "8080"), "webrtc_port");
@@ -223,6 +226,7 @@ Config load_vision_pilot_config()
         nav.zoom_m      = parse_double(optional(kv, "nav.zoom_m", "400"), "nav.zoom_m");
         nav.heading_up  = parse_bool(optional(kv, "nav.heading_up", "true"),
                                      "nav.heading_up");
+        nav.dark        = parse_bool(optional(kv, "nav.dark", "true"), "nav.dark");
         if (nav.panel_width < 160)
             throw std::runtime_error("nav.panel_width must be at least 160 px");
         if (nav.zoom_m < 50.0)

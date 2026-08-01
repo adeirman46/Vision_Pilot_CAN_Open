@@ -8,7 +8,10 @@ namespace visualization
         : show_window_(show_window)
     {
         if (show_window_)
+        {
             cv::namedWindow("VisionPilot", cv::WINDOW_NORMAL);
+            cv::setMouseCallback("VisionPilot", &LocalDisplay::on_mouse, this);
+        }
     }
 
     LocalDisplay::~LocalDisplay()
@@ -35,6 +38,31 @@ namespace visualization
         // it returns here is how the destination box gets typed into.
         last_key_ = cv::waitKey(1);
         return true;
+    }
+
+    void LocalDisplay::on_mouse(int event, int x, int y, int flags, void* self)
+    {
+        auto* d = static_cast<LocalDisplay*>(self);
+        std::lock_guard<std::mutex> lock(d->mouse_mtx_);
+        d->mouse_.x = x;
+        d->mouse_.y = y;
+        d->mouse_.inside = true;
+        if (event == cv::EVENT_LBUTTONDOWN) d->mouse_.left_down = true;
+        if (event == cv::EVENT_LBUTTONUP)   d->mouse_.left_down = false;
+        // Some builds report the button only in `flags`; trust that when it is
+        // there, so a drag that started outside the window still tracks.
+        if (event == cv::EVENT_MOUSEMOVE)
+            d->mouse_.left_down = (flags & cv::EVENT_FLAG_LBUTTON) != 0;
+        if (event == cv::EVENT_MOUSEWHEEL)
+            d->mouse_.wheel += cv::getMouseWheelDelta(flags) > 0 ? 1 : -1;
+    }
+
+    VisualInterface::MouseState LocalDisplay::mouse()
+    {
+        std::lock_guard<std::mutex> lock(mouse_mtx_);
+        MouseState out = mouse_;
+        mouse_.wheel = 0;      // wheel notches are consumed, position persists
+        return out;
     }
 
     bool LocalDisplay::stop()

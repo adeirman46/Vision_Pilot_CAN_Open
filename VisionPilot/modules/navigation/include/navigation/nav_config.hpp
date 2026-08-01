@@ -39,6 +39,7 @@ struct Config {
     int         panel_width = 512;    // px, appended to the right of the HUD
     double      zoom_m      = 400.0;  // metres covered across the panel width
     bool        heading_up  = true;   // false → north-up
+    bool        dark        = true;   // false → light / daytime map. 't' toggles.
 
     // Compose onto a canvas of exactly this size instead of just widening the
     // frame. The camera view plus a map panel is about 3:1, and a window that

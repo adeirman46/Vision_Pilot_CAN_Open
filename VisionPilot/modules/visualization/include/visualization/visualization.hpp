@@ -17,6 +17,10 @@ namespace visualization {
 
 struct ProductionView {
     double               ego_speed_ms   = 0.0;
+    // False until a real vehicle speed source exists (CAN). The HUD then shows
+    // a dash rather than a number, because a synthesised constant displayed as
+    // "54 kph" reads as a measurement and is not one.
+    bool                 ego_speed_valid = false;
     double               speed_limit_ms = 0.0;   // 0 = not shown
     double               acceleration   = 0.0;
     std::vector<uint8_t> warnings;   // Warning enum values (FCW=1 … RLDW=4)
@@ -62,7 +66,8 @@ struct ProductionView {
         const Plan& plan,
         double ego_speed_ms,
         const cv::Mat& H_resized = {},
-        double speed_limit_ms = 0.0);
+        double speed_limit_ms = 0.0,
+        bool ego_speed_valid = false);
 
     // Draw production UI onto the display frame and show the window.
     // frame should be the resized frame when H_resized was supplied to from().
@@ -75,7 +80,8 @@ struct ProductionView {
         const Plan& plan,
         double ego_speed_ms,
         const cv::Mat& H_resized = {},
-        double speed_limit_ms = 0.0);
+        double speed_limit_ms = 0.0,
+        bool ego_speed_valid = false);
 };
 
 struct Config
@@ -105,10 +111,13 @@ public:
         const Plan& plan,
         double ego_speed_ms,
         const cv::Mat& H_resized,
-        double speed_limit_ms = 0.0);
+        double speed_limit_ms = 0.0,
+        bool ego_speed_valid = false);
     bool render_frame(const cv::Mat& display_frame);
     // Key typed into the window during the last render_frame(), or -1.
     int  last_key() const;
+    // Pointer state inside the window, for dragging and zooming the map.
+    VisualInterface::MouseState mouse();
     bool stop() const;
 };
 

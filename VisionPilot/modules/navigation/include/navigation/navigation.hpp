@@ -1,6 +1,7 @@
 #ifndef VISIONPILOT_NAVIGATION_HPP
 #define VISIONPILOT_NAVIGATION_HPP
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -63,7 +64,44 @@ public:
     bool handle_key(int key);
     bool destination_input_active() const { return input_active_; }
 
+    // ── Pan and zoom ─────────────────────────────────────────────────────────
+    // Drag the map with the left button, wheel to zoom, 'r' (or a drag that
+    // ends back near the car) to follow again. Panning suspends auto-centring
+    // so the map does not fight the hand moving it; it resumes by itself after
+    // a few seconds of stillness, because a driver should never be left looking
+    // at a map that is not where they are.
+    void handle_mouse(int x, int y, bool left_down, int wheel);
+    void recenter();
+    // Move the map by a pixel delta. The UI owns the pointer, so it converts
+    // its own coordinates and just says how far.
+    void pan_by(double dx, double dy);
+    bool panned() const { return panned_; }
+    // True while the left button is held on the map. The app uses this to keep
+    // repainting between inference frames, so the map tracks the mouse at
+    // pointer rate instead of at the ~25 fps the models run at.
+    bool dragging() const { return dragging_; }
+
+    // Where the panel was drawn in the composed frame, so mouse coordinates can
+    // be tested against it. Set by compose().
+    cv::Rect panel_rect() const { return panel_rect_; }
+
     cv::Mat panel(int height);
+    // Render at an explicit size, for a UI that owns its own layout.
+    cv::Mat panel(int width, int height);
+
+    // ── For a real UI front-end ──────────────────────────────────────────────
+    const OsmMap& map() const { return map_; }
+    void   set_dark(bool d) { cfg_.dark = d; }
+    bool   dark() const { return cfg_.dark; }
+    void   set_heading_up(bool h) { cfg_.heading_up = h; }
+    bool   heading_up() const { return cfg_.heading_up; }
+    void   zoom_by(double factor)
+    { cfg_.zoom_m = std::clamp(cfg_.zoom_m * factor, 50.0, 8000.0); }
+    double zoom_m() const { return cfg_.zoom_m; }
+    bool   has_route() const;
+    std::string destination_name() const { return dest_name_; }
+    const RouteProgress& progress() const { return progress_; }
+    std::string road_name() const { return road_name_; }
 
     // frame | panel, side by side. Returns frame untouched when disabled.
     cv::Mat compose(const cv::Mat& frame);
@@ -117,6 +155,16 @@ private:
     std::string                 input_note_;   // "no match", "go", ...
 
     void refresh_input_hits();
+
+    // ── Pan / zoom state ─────────────────────────────────────────────────────
+    // Offsets are in panel pixels, not metres: a drag should move the map by
+    // exactly the distance the hand moved, whatever the rotation or the zoom.
+    double   pan_x_ = 0.0, pan_y_ = 0.0;
+    bool     panned_ = false;
+    bool     dragging_ = false;
+    int      drag_last_x_ = 0, drag_last_y_ = 0;
+    uint64_t last_pan_ms_ = 0;
+    cv::Rect panel_rect_;
 };
 
 }  // namespace navigation

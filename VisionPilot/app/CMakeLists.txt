@@ -76,3 +76,7 @@ install(DIRECTORY "${CMAKE_SOURCE_DIR}/modules/models/weights/"
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/onnxruntime/"
         DESTINATION "share/visionpilot/onnxruntime"
 )
+
+# Qt front-end: search bar, buttons, and a map that repaints independently of
+# inference. Skipped automatically when Qt5 is not installed.
+add_subdirectory(qt)

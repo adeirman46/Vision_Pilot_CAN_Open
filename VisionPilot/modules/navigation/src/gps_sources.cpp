@@ -180,15 +180,35 @@ void derive_motion(GpsFix& fix, const GpsFix* prev)
     const double dist = std::hypot(north, east);
 
     if (fix.speed_ms <= 0.0 && dt > 0.0) fix.speed_ms = dist / dt;
-    if (!fix.has_bearing) {
-        if (dist > 1.0) {
-            fix.bearing_deg = std::fmod(std::atan2(east, north) * 180.0 / M_PI + 360.0, 360.0);
-            fix.has_bearing = true;
-        } else if (prev->has_bearing) {
+
+    if (fix.has_bearing) return;
+
+    // A parked phone still reports a position that wanders by tens of metres,
+    // and treating that wander as travel produces a heading that points
+    // anywhere. On a heading-up map that is a compass spinning on its own. So a
+    // new heading is only believed when the car has actually moved: further
+    // than the fix's own uncertainty, and fast enough that it cannot be noise.
+    const double moved_enough = std::max(8.0, prev->accuracy_m * 0.75);
+    const bool   really_moving = dist > moved_enough && fix.speed_ms > 1.5;
+
+    if (!really_moving) {
+        if (prev->has_bearing) {          // hold the last real heading
             fix.bearing_deg = prev->bearing_deg;
             fix.has_bearing = true;
         }
+        return;
     }
+
+    const double raw = std::fmod(std::atan2(east, north) * 180.0 / M_PI + 360.0, 360.0);
+    if (!prev->has_bearing) {
+        fix.bearing_deg = raw;
+    } else {
+        // Low-pass, the short way round the circle, so a real turn arrives
+        // smoothly instead of snapping.
+        double delta = std::fmod(raw - prev->bearing_deg + 540.0, 360.0) - 180.0;
+        fix.bearing_deg = std::fmod(prev->bearing_deg + 0.35 * delta + 360.0, 360.0);
+    }
+    fix.has_bearing = true;
 }
 
 }  // namespace
@@ -355,8 +375,11 @@ bool PhyphoxGps::fetch(GpsFix& fix, std::string& note)
     // Android reports bearing as 0 when stopped rather than "unknown", so a
     // standing start would otherwise lock the map pointing north. Let
     // derive_motion() fill it from movement instead.
+    // Android reports a bearing even when parked, where it is meaningless and
+    // jumps between fixes. Only take it while genuinely moving; otherwise leave
+    // it unset and let derive_motion() hold the last real heading.
     double dir = 0.0;
-    if (phyphox_buffer(body, "dir", dir) && (dir != 0.0 || fix.speed_ms > 1.0)) {
+    if (phyphox_buffer(body, "dir", dir) && fix.speed_ms > 1.5 && dir != 0.0) {
         fix.bearing_deg = dir;
         fix.has_bearing = true;
     }

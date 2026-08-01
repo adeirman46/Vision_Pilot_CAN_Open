@@ -14,16 +14,50 @@ namespace {
 constexpr int kFont      = cv::FONT_HERSHEY_DUPLEX;
 constexpr int kManeuverH = 88;   // px — arrow + distance + "onto <road>"
 
-// Dark basemap, so the panel sits next to the camera view without fighting it.
-const cv::Scalar kBackground(24, 22, 20);
-const cv::Scalar kPanelEdge (60, 56, 52);
-const cv::Scalar kTextMain  (240, 240, 240);
-const cv::Scalar kTextDim   (150, 150, 150);
-const cv::Scalar kRouteLine (60, 190, 255);    // BGR — amber
-const cv::Scalar kEgo       (120, 255, 120);
-const cv::Scalar kBanner    (40, 36, 32);
-const cv::Scalar kWarn      (60, 170, 255);    // BGR — warning amber
-const cv::Scalar kDest      (120, 210, 255);
+// Palette. Mutable and swapped per frame by set_theme(): a night drive wants
+// the dark map, a bright day wants the light one, and the difference is only
+// ever which set of colours these names hold.
+cv::Scalar kBackground(24, 22, 20);
+cv::Scalar kPanelEdge (60, 56, 52);
+cv::Scalar kTextMain  (240, 240, 240);
+cv::Scalar kTextDim   (150, 150, 150);
+cv::Scalar kRouteLine (60, 190, 255);    // BGR — amber
+cv::Scalar kEgo       (120, 255, 120);
+cv::Scalar kBanner    (40, 36, 32);
+cv::Scalar kWarn      (60, 170, 255);
+cv::Scalar kDest      (120, 210, 255);
+cv::Scalar kCasing    (12, 11, 10);      // outline under every road
+bool       g_dark = true;
+
+void set_theme(bool dark)
+{
+    g_dark = dark;
+    if (dark) {
+        kBackground = {24, 22, 20};
+        kPanelEdge  = {60, 56, 52};
+        kTextMain   = {240, 240, 240};
+        kTextDim    = {150, 150, 150};
+        kRouteLine  = {60, 190, 255};
+        kEgo        = {120, 255, 120};
+        kBanner     = {40, 36, 32};
+        kWarn       = {60, 170, 255};
+        kDest       = {120, 210, 255};
+        kCasing     = {12, 11, 10};
+    } else {
+        // Paper map: near-white land, white roads with a grey casing, which is
+        // what makes the hierarchy readable in sunlight.
+        kBackground = {235, 238, 240};
+        kPanelEdge  = {190, 193, 196};
+        kTextMain   = {32, 33, 36};
+        kTextDim    = {110, 114, 120};
+        kRouteLine  = {40, 140, 240};
+        kEgo        = {40, 150, 40};
+        kBanner     = {248, 249, 250};
+        kWarn       = {30, 110, 220};
+        kDest       = {180, 100, 30};
+        kCasing     = {186, 190, 194};
+    }
+}
 
 // Semi-transparent filled rectangle, clipped to the image.
 void fill_rect_alpha(cv::Mat& img, cv::Rect r, const cv::Scalar& color, double alpha)
@@ -44,6 +78,22 @@ struct RoadStyle {
 RoadStyle style_for(uint8_t road_class, bool link)
 {
     RoadStyle s;
+    if (!g_dark) {
+        // Light theme: white roads on pale land, wider as the class rises.
+        switch (road_class) {
+        case kMotorway:     s = {cv::Scalar(150, 205, 255), 5.0}; break;
+        case kTrunk:        s = {cv::Scalar(170, 220, 255), 4.5}; break;
+        case kPrimary:      s = {cv::Scalar(215, 240, 255), 4.0}; break;
+        case kSecondary:    s = {cv::Scalar(255, 255, 255), 3.2}; break;
+        case kTertiary:     s = {cv::Scalar(255, 255, 255), 2.6}; break;
+        case kResidential:  s = {cv::Scalar(255, 255, 255), 2.0}; break;
+        case kLivingStreet: s = {cv::Scalar(250, 250, 250), 1.6}; break;
+        case kService:      s = {cv::Scalar(244, 245, 246),  1.3}; break;
+        default:            s = {cv::Scalar(250, 250, 250), 1.8}; break;
+        }
+        if (link) s.width = std::max(1.4, s.width * 0.6);
+        return s;
+    }
     switch (road_class) {
     case kMotorway:     s = {cv::Scalar(120, 190, 250), 5.0}; break;
     case kTrunk:        s = {cv::Scalar(110, 170, 240), 4.5}; break;
@@ -213,6 +263,35 @@ void draw_maneuver(cv::Mat& img, Maneuver m, cv::Point c, int size, cv::Scalar c
     cv::fillConvexPoly(img, tri, color, cv::LINE_AA);
 }
 
+// ─── Basemap cache ───────────────────────────────────────────────────────────
+// Roads and the route are expensive to draw — every way in view, re-projected
+// and antialias-stroked twice — and they only change when the car moves, the
+// zoom changes or the route is replaced. All of those happen at GPS rate (2 Hz)
+// or on a keypress, never at frame rate. So draw them once into a buffer larger
+// than the panel and blit a window of it each frame; a drag then costs a memcpy
+// instead of a full redraw, which is what makes it track the mouse smoothly.
+struct BasemapCache {
+    cv::Mat img;
+    bool    valid = false;
+    bool    dark = true;
+    double  ref_lat = 0, ref_lon = 0, rot = 0, m_per_px = 0;
+    int     w = 0, h = 0;
+    double  pan_x = 0, pan_y = 0;    // pan the buffer was drawn for
+    size_t  route_fp = 0;
+};
+BasemapCache g_basemap;
+constexpr int kBasemapMargin = 260;   // px of slack around the panel
+
+// Cheap fingerprint: a different route always differs in one of these.
+size_t route_fingerprint(const Route* r)
+{
+    if (!r || !r->valid) return 0;
+    return r->nodes.size() * 1000003u +
+           static_cast<size_t>(r->length_m) * 31u +
+           static_cast<size_t>(r->dest_lat * 1e5) ^
+           static_cast<size_t>(r->dest_lon * 1e5);
+}
+
 // Ways run far past the viewport — a primary road can be the width of the whole
 // extract. Draw segment by segment and drop the ones that cannot touch the
 // image, so nothing hands OpenCV a line a million pixels long.
@@ -249,6 +328,7 @@ void draw_ego(cv::Mat& img, cv::Point c, double heading_rad)
 
 cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int height)
 {
+    set_theme(view.dark);
     cv::Mat panel(height, width, CV_8UC3, kBackground);
 
     // kManeuverH is the arrow/distance part; the destination strip sits under it.
@@ -260,7 +340,11 @@ cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int 
 
     // ── Projection: metres → panel pixels, ego near the lower third ──────────
     const double m_per_px = std::max(1e-3, view.zoom_m / std::max(1, width));
-    const cv::Point ego_px(width / 2, map_top + static_cast<int>(map_h * 0.62));
+    // The pan offset moves the whole projection, so a drag shifts the map by
+    // exactly the pixels the hand moved regardless of rotation or zoom.
+    const cv::Point ego_px(width / 2 + static_cast<int>(view.pan_x),
+                           map_top + static_cast<int>(map_h * 0.62) +
+                               static_cast<int>(view.pan_y));
     const double rot = (view.heading_up && view.fix && view.fix->has_bearing)
                            ? -view.fix->bearing_deg * M_PI / 180.0
                            : 0.0;
@@ -283,64 +367,125 @@ cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int 
     };
 
     if (view.fix && map.loaded()) {
-        // Half-diagonal of the map area, so a rotated view still covers corners.
-        const double reach_m = std::hypot(width, map_h) * 0.5 * m_per_px + 100.0;
-        const double dlat = reach_m / kEarthR * 180.0 / M_PI;
-        const double dlon = dlat / std::max(0.2, std::cos(ref_lat * M_PI / 180.0));
+        // ── Basemap: drawn into an oversized buffer, reused between frames ───
+        const int BW = width + 2 * kBasemapMargin;
+        const int BH = map_h + 2 * kBasemapMargin;
+        const size_t fp = route_fingerprint(view.route);
 
-        const cv::Rect clip(0, map_top, width, map_h);
-        cv::Mat roi = panel(clip);
+        // Re-draw when the view genuinely changed, or when the drag has taken
+        // the window near the edge of what the buffer covers.
+        const bool drifted = std::abs(view.pan_x - g_basemap.pan_x) > kBasemapMargin - 60 ||
+                             std::abs(view.pan_y - g_basemap.pan_y) > kBasemapMargin - 60;
+        const bool stale = !g_basemap.valid || g_basemap.w != BW || g_basemap.h != BH ||
+                           g_basemap.ref_lat != ref_lat || g_basemap.ref_lon != ref_lon ||
+                           g_basemap.rot != rot || g_basemap.m_per_px != m_per_px ||
+                           g_basemap.route_fp != fp || g_basemap.dark != view.dark ||
+                           drifted;
 
-        const auto ids = map.ways_in_bbox(ref_lat - dlat, ref_lon - dlon,
-                                          ref_lat + dlat, ref_lon + dlon);
+        if (stale) {
+            if (g_basemap.img.rows != BH || g_basemap.img.cols != BW)
+                g_basemap.img.create(BH, BW, CV_8UC3);
+            g_basemap.img.setTo(kBackground);
 
-        // Two passes so the arterials are not cut by the residential streets
-        // crossing them: casings first, then the fills.
-        for (int pass = 0; pass < 2; ++pass) {
-            for (const uint32_t wi : ids) {
-                const Way& w = map.ways()[wi];
-                const RoadStyle st = style_for(w.road_class, (w.flags & kLink) != 0);
+            // Ego's position inside the buffer for this pan. When the map has
+            // been dragged a long way it lands outside the buffer, which is
+            // right: the window is then looking somewhere the car is not.
+            const double bx = kBasemapMargin + width / 2.0 + view.pan_x;
+            const double by = kBasemapMargin + map_h * 0.62 + view.pan_y;
 
-                std::vector<cv::Point> pts;
-                pts.reserve(w.nodes.size());
-                for (const uint32_t ni : w.nodes) {
-                    const Node& n = map.nodes()[ni];
-                    cv::Point p = project(n.lat(), n.lon());
-                    pts.push_back(cv::Point(p.x, p.y - map_top));
-                }
-                if (pts.size() < 2) continue;
+            auto bproject = [&](double lat, double lon) {
+                double e, n;
+                lat_lon_to_en(lat, lon, ref_lat, ref_lon, e, n);
+                const double rx = e * cr - n * sr;
+                const double ry = e * sr + n * cr;
+                return cv::Point(
+                    static_cast<int>(std::clamp(bx + rx / m_per_px, -1e5, 1e5)),
+                    static_cast<int>(std::clamp(by - ry / m_per_px, -1e5, 1e5)));
+            };
 
-                if (pass == 0)
-                    draw_polyline_clipped(roi, pts, cv::Scalar(12, 11, 10),
-                                          cvRound(st.width) + 3);
-                else
-                    draw_polyline_clipped(roi, pts, st.color,
-                                          std::max(1, cvRound(st.width)));
-            }
-        }
+            // Query around the middle of the buffer, not around the car: after a
+            // drag those are different places, and querying the car's
+            // neighbourhood would leave the dragged-to area blank.
+            const double cx_off = (BW / 2.0) - bx;
+            const double cy_off = (BH / 2.0) - by;
+            const double rx_m = cx_off * m_per_px;
+            const double ry_m = -cy_off * m_per_px;
+            const double e_c = rx_m * cr + ry_m * sr;
+            const double n_c = -rx_m * sr + ry_m * cr;
+            const double c_lat = ref_lat + n_c / kEarthR * 180.0 / M_PI;
+            const double c_lon = ref_lon + e_c /
+                                 (kEarthR * std::max(0.2, std::cos(ref_lat * M_PI / 180.0)))
+                                 * 180.0 / M_PI;
 
-        // ── Route ────────────────────────────────────────────────────────────
-        if (view.route && view.route->valid) {
+            const double reach_m = std::hypot(BW, BH) * 0.5 * m_per_px + 100.0;
+            const double dlat = reach_m / kEarthR * 180.0 / M_PI;
+            const double dlon = dlat / std::max(0.2, std::cos(c_lat * M_PI / 180.0));
+
+            const auto ids = map.ways_in_bbox(c_lat - dlat, c_lon - dlon,
+                                              c_lat + dlat, c_lon + dlon);
+
+            // Two passes so arterials are not cut by the streets crossing them:
+            // casings first, then the fills.
             std::vector<cv::Point> pts;
-            pts.reserve(view.route->nodes.size());
-            for (const uint32_t ni : view.route->nodes) {
-                const Node& n = map.nodes()[ni];
-                cv::Point p = project(n.lat(), n.lon());
-                pts.push_back(cv::Point(p.x, p.y - map_top));
-            }
-            if (pts.size() >= 2) {
-                draw_polyline_clipped(roi, pts, cv::Scalar(40, 60, 90), 11);
-                draw_polyline_clipped(roi, pts, kRouteLine, 6);
+            for (int pass = 0; pass < 2; ++pass) {
+                for (const uint32_t wi : ids) {
+                    const Way& w = map.ways()[wi];
+                    const RoadStyle st = style_for(w.road_class, (w.flags & kLink) != 0);
+                    pts.clear();
+                    pts.reserve(w.nodes.size());
+                    for (const uint32_t ni : w.nodes) {
+                        const Node& n = map.nodes()[ni];
+                        pts.push_back(bproject(n.lat(), n.lon()));
+                    }
+                    if (pts.size() < 2) continue;
+                    if (pass == 0)
+                        draw_polyline_clipped(g_basemap.img, pts, kCasing,
+                                              cvRound(st.width) + 3);
+                    else
+                        draw_polyline_clipped(g_basemap.img, pts, st.color,
+                                              std::max(1, cvRound(st.width)));
+                }
             }
 
-            // Destination pin.
-            const cv::Point d = project(view.route->dest_lat, view.route->dest_lon);
-            const cv::Point dp(d.x, d.y - map_top);
-            if (clip.contains(cv::Point(d.x, d.y))) {
-                cv::circle(roi, dp, 8, cv::Scalar(60, 60, 240), -1, cv::LINE_AA);
-                cv::circle(roi, dp, 8, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+            if (view.route && view.route->valid) {
+                pts.clear();
+                pts.reserve(view.route->nodes.size());
+                for (const uint32_t ni : view.route->nodes) {
+                    const Node& n = map.nodes()[ni];
+                    pts.push_back(bproject(n.lat(), n.lon()));
+                }
+                if (pts.size() >= 2) {
+                    draw_polyline_clipped(g_basemap.img, pts, cv::Scalar(40, 60, 90), 11);
+                    draw_polyline_clipped(g_basemap.img, pts, kRouteLine, 6);
+                }
+                const cv::Point d = bproject(view.route->dest_lat, view.route->dest_lon);
+                if (cv::Rect(0, 0, BW, BH).contains(d)) {
+                    cv::circle(g_basemap.img, d, 8, cv::Scalar(60, 60, 240), -1, cv::LINE_AA);
+                    cv::circle(g_basemap.img, d, 8, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+                }
             }
+
+            g_basemap.valid    = true;
+            g_basemap.dark     = view.dark;
+            g_basemap.w        = BW;
+            g_basemap.h        = BH;
+            g_basemap.ref_lat  = ref_lat;
+            g_basemap.ref_lon  = ref_lon;
+            g_basemap.rot      = rot;
+            g_basemap.m_per_px = m_per_px;
+            g_basemap.route_fp = fp;
+            g_basemap.pan_x    = view.pan_x;
+            g_basemap.pan_y    = view.pan_y;
         }
+
+        // Blit the window of the buffer this pan is looking at — the whole point
+        // of the cache: a drag is a memcpy, not a redraw.
+        const int sx = kBasemapMargin - static_cast<int>(view.pan_x - g_basemap.pan_x);
+        const int sy = kBasemapMargin - static_cast<int>(view.pan_y - g_basemap.pan_y);
+        const cv::Rect src(std::clamp(sx, 0, std::max(0, BW - width)),
+                           std::clamp(sy, 0, std::max(0, BH - map_h)),
+                           width, map_h);
+        g_basemap.img(src).copyTo(panel(cv::Rect(0, map_top, width, map_h)));
 
         draw_ego(panel, ego_px, view.heading_up || !view.fix->has_bearing
                                     ? 0.0
@@ -477,10 +622,14 @@ cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int 
     }
 
     // The box itself is drawn over the whole window by draw_destination_box();
-    // inside a 512 px panel it would be a postage stamp.
-    if (!view.input_active && view.map_loaded)
-        text(panel, "press  d  to set destination",
-             cv::Point(12, height - footer_h - 10), 0.36, kTextDim);
+    // inside the panel it would be a postage stamp.
+    if (!view.input_active && view.map_loaded) {
+        // Top-left, clear of the scale bar that lives in the bottom-left.
+        text(panel, "d  destination      wheel / + -  zoom      t  light/dark",
+             cv::Point(12, map_top + 20), 0.36, kTextDim);
+        if (view.panned)
+            text(panel, "r  recentre", cv::Point(12, map_top + 40), 0.4, kWarn);
+    }
 
     cv::rectangle(panel, cv::Rect(0, 0, width, height), kPanelEdge, 1);
     return panel;
@@ -492,9 +641,11 @@ cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int 
 void draw_destination_box(cv::Mat& canvas, const MapView& view)
 {
     if (!view.input_active || canvas.empty()) return;
+    set_theme(view.dark);
 
     const int W = canvas.cols, H = canvas.rows;
-    fill_rect_alpha(canvas, cv::Rect(0, 0, W, H), cv::Scalar(0, 0, 0), 0.62);
+    fill_rect_alpha(canvas, cv::Rect(0, 0, W, H),
+                    g_dark ? cv::Scalar(0, 0, 0) : cv::Scalar(255, 255, 255), 0.62);
 
     const int rows   = std::max<int>(1, static_cast<int>(view.input_hits.size()));
     const int row_h  = 46;
@@ -502,14 +653,15 @@ void draw_destination_box(cv::Mat& canvas, const MapView& view)
     const int box_h  = std::min(H - 100, 168 + rows * row_h);
     const cv::Rect box((W - box_w) / 2, std::max(40, H / 2 - box_h / 2), box_w, box_h);
 
-    cv::rectangle(canvas, box, cv::Scalar(28, 26, 24), -1);
+    cv::rectangle(canvas, box, kBanner, -1);
     cv::rectangle(canvas, box, kDest, 2, cv::LINE_AA);
 
     text(canvas, "Where to?", cv::Point(box.x + 22, box.y + 42), 0.78, kDest, 2);
 
     // Entry line with a blinking caret.
     const cv::Rect entry(box.x + 22, box.y + 60, box.width - 44, 46);
-    cv::rectangle(canvas, entry, cv::Scalar(16, 15, 14), -1);
+    cv::rectangle(canvas, entry, g_dark ? cv::Scalar(16, 15, 14)
+                                        : cv::Scalar(255, 255, 255), -1);
     cv::rectangle(canvas, entry, kPanelEdge, 1);
     const bool caret_on =
         (cv::getTickCount() / static_cast<int64>(cv::getTickFrequency() / 2)) % 2 == 0;
