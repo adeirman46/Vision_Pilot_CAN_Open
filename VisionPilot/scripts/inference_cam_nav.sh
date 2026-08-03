@@ -86,8 +86,8 @@ set -euo pipefail
 
 VP_ROOT="${VP_ROOT:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}"
 BUILD_DIR="${VP_BUILD:-$VP_ROOT/build}"
-DEFAULT_URL="${VP_CAM_URL:-http://10.142.152.101:8081/video}"
-DEFAULT_GPS="${VP_GPS_URL:-http://10.154.111.223:8080}"
+DEFAULT_URL="${VP_CAM_URL:-http://10.146.137.141:8081/video}"
+DEFAULT_GPS="${VP_GPS_URL:-http://172.27.74.24:8080}"
 
 usage() { sed -n '2,64p' "$0"; exit "${1:-1}"; }
 
