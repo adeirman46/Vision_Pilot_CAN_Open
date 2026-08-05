@@ -66,14 +66,15 @@ through C. Getting `H` right is what makes distances and lane geometry line up.
 
 | Path                                                                       | What it is                                                           |
 | -------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| [setup.sh](setup.sh)                                                       | One-command setup — packages, ONNX Runtime, build                    |
+| [scripts/setup.sh](scripts/setup.sh)                                                       | One-command setup — packages, ONNX Runtime, build                    |
 | [VisionPilot/](VisionPilot/)                                               | The stack itself — C++ app, modules, models, configs, scripts        |
 | [VisionPilot/app/](VisionPilot/app/)                                       | `vision_pilot.cpp` — the main loop                                   |
 | [VisionPilot/modules/](VisionPilot/modules/)                               | Sensing, engine, models, fusion, planning, visualization, logging    |
 | [VisionPilot/modules/models/weights/](VisionPilot/modules/models/weights/) | Shipped ONNX weights, fp32 and int8                                  |
 | [VisionPilot/config/](VisionPilot/config/)                                 | Runtime config, camera homography, CAN DBC                           |
 | [VisionPilot/tools/](VisionPilot/tools/)                                   | `build_trt_engines` — builds TensorRT engines one process at a time  |
-| [VisionPilot/scripts/](VisionPilot/scripts/)                               | `run_inference.sh`, `inference_cam.sh`, `build_models.sh`, quantiser, nuScenes converter |
+| [scripts/](scripts/)                                                       | Every runnable script: `setup.sh`, `run_inference.sh`, `inference_cam.sh`, `inference_cam_nav.sh`, `imu_view.sh`, `build_models.sh`, `build_osm_map.sh` |
+| [VisionPilot/scripts/](VisionPilot/scripts/)                               | Python helpers the shell scripts call: quantiser, nuScenes converter, homography |
 | [VisionPilot/data/nuscenes/](VisionPilot/data/nuscenes/)                   | Five bundled nuScenes clips with speed tracks and calibration        |
 | [VisionPilot/docker/](VisionPilot/docker/)                                 | GPU and CPU images plus `build.sh` / `run.sh`                        |
 | [VisionPilot/docs/](VisionPilot/docs/)                                     | [nuScenes how-to (PDF)](VisionPilot/docs/nuscenes_howto.pdf)         |
@@ -95,23 +96,23 @@ through C. Getting `H` right is what makes distances and lane geometry line up.
 | Python            | `python3` with `numpy` + `opencv-python` (C-matrix generator); `ffmpeg` for `run_inference.sh` |
 
 A GPU is not strictly required — `engine.provider = cpu` works, just slowly. Everything in
-that table except the NVIDIA driver and CUDA itself is installed by [`setup.sh`](setup.sh).
+that table except the NVIDIA driver and CUDA itself is installed by [`scripts/setup.sh`](scripts/setup.sh).
 
 ## Setup
 
-[`setup.sh`](setup.sh) does all of it — submodules, apt packages, the coin-or header link,
+[`scripts/setup.sh`](scripts/setup.sh) does all of it — submodules, apt packages, the coin-or header link,
 the ONNX Runtime release matching your CUDA version, and the build:
 
 ```bash
 git clone --recurse-submodules https://github.com/adeirman46/Vision_Pilot_CAN_Open.git
 cd Vision_Pilot_CAN_Open
-./setup.sh
+./scripts/setup.sh
 ```
 
 Then run a clip:
 
 ```bash
-VisionPilot/scripts/run_inference.sh scene-0796
+scripts/run_inference.sh scene-0796
 ```
 
 It prompts for `sudo` once, for the package install, and is safe to re-run: an ONNX Runtime
@@ -132,9 +133,9 @@ that is already unpacked gets reused and the build is incremental.
 | `--verify`          | Finish with a headless run of scene-0796 as a smoke test                 |
 
 ```bash
-./setup.sh --cpu                     # no NVIDIA GPU
-./setup.sh --engines int8 --verify   # build the int8 engines too, then smoke-test
-./setup.sh --skip-apt --clean        # rebuild from scratch, touch nothing system-wide
+./scripts/setup.sh --cpu                     # no NVIDIA GPU
+./scripts/setup.sh --engines int8 --verify   # build the int8 engines too, then smoke-test
+./scripts/setup.sh --skip-apt --clean        # rebuild from scratch, touch nothing system-wide
 ```
 
 `--engines` is the only slow extra: TensorRT compiles each model into a GPU-specific engine,
@@ -143,7 +144,7 @@ minutes apiece. Skip it unless you want the `tensorrt` provider — see
 
 ### Doing it by hand
 
-What `setup.sh` runs, in case you would rather drive it yourself or it fails partway.
+What `scripts/setup.sh` runs, in case you would rather drive it yourself or it fails partway.
 
 #### 1. Clone
 
@@ -365,7 +366,7 @@ cd VisionPilot/scripts
 
 int8 runs on TensorRT, and TensorRT has to compile each model into a GPU-specific engine
 before it can execute. That compile takes minutes and several GB of RAM, so it belongs in
-[build_models.sh](VisionPilot/scripts/build_models.sh), not in a run: `run_inference.sh`
+[build_models.sh](scripts/build_models.sh), not in a run: `run_inference.sh`
 refuses to start when the engines are missing and tells you to build them (pass
 `--allow-build` if you would rather it compiled in-process). Engines are cached in
 `engine.cache_dir`, so you build once per precision and every later run starts in seconds.
@@ -529,12 +530,12 @@ cd VisionPilot/build
 
 | Symptom                                                            | Cause / fix                                                                                                                                     |
 | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Anything during setup or the build                                 | `./setup.sh` from the repository root handles the four rows below; `--clean` retries from scratch                                               |
+| Anything during setup or the build                                 | `./scripts/setup.sh` from the repository root handles the four rows below; `--clean` retries from scratch                                               |
 | `[engine] ONNXRUNTIME_ROOT is not set`                             | Pass `-DONNXRUNTIME_ROOT=<unpacked ORT dir>` to CMake                                                                                           |
 | `fatal error: coin-or/IpIpoptApplication.hpp: No such file`        | `sudo ln -sfn /usr/include/coin /usr/include/coin-or`                                                                                           |
 | `undefined reference to cppad_...`                                 | Configure with `-DCMAKE_CXX_STANDARD_LIBRARIES="-lcppad_lib"`                                                                                   |
 | `Failed to load libonnxruntime_providers_cuda.so … libcufft.so.11` | `sudo apt install libcufft-12-8 libcurand-12-8 && sudo ldconfig`                                                                                |
-| The compiler is OOM-killed / the machine freezes while building    | Too many parallel jobs for the free RAM. `./setup.sh --jobs 4`, or `make -j4`                                                                   |
+| The compiler is OOM-killed / the machine freezes while building    | Too many parallel jobs for the free RAM. `./scripts/setup.sh --jobs 4`, or `make -j4`                                                                   |
 | `Config file not found: vision_pilot.conf`                         | Run the binary from `VisionPilot/build`, not from the source root                                                                               |
 | `Config file not found: autodrive_<x>.onnx`                        | `model.precision` must be `fp32` or `int8`                                                                                                      |
 | `FileInterface: read() called past end of speeds data`             | Speed track shorter than the clip; use `run_inference.sh`, which pads it. On a live camera the run outlasted `inference_cam.sh --hours`         |

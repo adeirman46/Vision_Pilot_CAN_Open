@@ -24,7 +24,7 @@
 # Env overrides: VP_ROOT (VisionPilot source dir), VP_BUILD (build dir)
 set -euo pipefail
 
-VP_ROOT="${VP_ROOT:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}"
+VP_ROOT="${VP_ROOT:-$(cd "$(dirname "$(readlink -f "$0")")/../VisionPilot" && pwd)}"
 BUILD_DIR="${VP_BUILD:-$VP_ROOT/build}"
 CLIP_DIR="$VP_ROOT/data/nuscenes"
 
@@ -55,7 +55,7 @@ TOOL="$BUILD_DIR/build_trt_engines"
 [ -x "$TOOL" ] || {
     echo "error: $TOOL not built." >&2
     echo "       Set the machine up and build it in one step:" >&2
-    echo "         $(cd "$VP_ROOT/.." && pwd)/setup.sh" >&2
+    echo "         $(cd "$VP_ROOT/.." && pwd)/scripts/setup.sh" >&2
     exit 1; }
 
 MAIN_CONF="$BUILD_DIR/config/vision_pilot.conf"

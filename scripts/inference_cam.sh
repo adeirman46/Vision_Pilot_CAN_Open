@@ -38,7 +38,7 @@
 # Env overrides: VP_ROOT (VisionPilot source dir), VP_BUILD (build dir), VP_CAM_URL
 set -euo pipefail
 
-VP_ROOT="${VP_ROOT:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}"
+VP_ROOT="${VP_ROOT:-$(cd "$(dirname "$(readlink -f "$0")")/../VisionPilot" && pwd)}"
 BUILD_DIR="${VP_BUILD:-$VP_ROOT/build}"
 DEFAULT_URL="${VP_CAM_URL:-http://10.142.152.101:8080/video}"
 
@@ -133,7 +133,7 @@ fi
 [ -x "$BUILD_DIR/VisionPilot" ] || {
     echo "error: $BUILD_DIR/VisionPilot not built" >&2
     echo "       Set the machine up and build it in one step:" >&2
-    echo "         $(cd "$VP_ROOT/.." && pwd)/setup.sh" >&2
+    echo "         $(cd "$VP_ROOT/.." && pwd)/scripts/setup.sh" >&2
     exit 1; }
 
 WORK="$BUILD_DIR/run_inputs"

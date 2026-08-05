@@ -29,6 +29,17 @@ struct Config {
     double      fixed_lon  = 107.6191;
     double      gps_rate_hz = 2.0;
 
+    // ── IMU ──────────────────────────────────────────────────────────────────
+    // With an IMU attached the position source becomes a GPS/IMU filter instead
+    // of the raw receiver: fixes arrive at IMU rate, move smoothly between them,
+    // and keep a heading while stopped. Everything downstream is unchanged.
+    bool        imu_enabled = false;
+    std::string imu_port;              // empty = first USB serial port found
+    int         imu_baud    = 0;       // 0 = auto-detect
+    // Draw the unfiltered receiver alongside the fused position, so the two can
+    // be judged against each other on a real drive.
+    bool        compare_gps = false;
+
     // ── Destination (empty → free-drive map, no route) ───────────────────────
     bool        has_destination = false;
     double      dest_lat = 0.0;

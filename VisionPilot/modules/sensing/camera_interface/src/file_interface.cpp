@@ -1,5 +1,6 @@
 #include "camera_interface/file_interface.hpp"
 
+#include <cstdlib>
 #include <thread>
 
 #include <config/vision_pilot_config.hpp>
@@ -17,6 +18,24 @@ constexpr auto kStreamRetryDelay = std::chrono::seconds(1);
 FileInterface::FileInterface(const std::string& path, bool loop, bool realtime)
     : path_(path), loop_(loop), realtime_(realtime), stream_(is_stream_url(path))
 {
+    if (stream_) {
+        // FFmpeg buffers a live stream before OpenCV ever sees it, and that
+        // buffer is where seconds of delay hide: draining frames faster on our
+        // side cannot help, because the queue refills at the rate the phone
+        // sends. It has to be told not to build one.
+        //
+        // OpenCV exposes no API for this, only an environment variable read when
+        // the capture is opened, so it is set here rather than in a launcher —
+        // the setting belongs with the code that depends on it.
+        //   nobuffer/low_delay  hand each frame over as it decodes
+        //   max_delay 0         do not wait to reorder
+        //   probesize/analyzeduration  stop sampling the stream before starting
+        setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS",
+               "fflags;nobuffer|flags;low_delay|max_delay;0|reorder_queue_size;0"
+               "|probesize;32|analyzeduration;0",
+               1);
+    }
+
     cap_.open(path);
     if (!cap_.isOpened()) {
         return;
@@ -27,6 +46,43 @@ FileInterface::FileInterface(const std::string& path, bool loop, bool realtime)
     const double fps = cap_.get(cv::CAP_PROP_FPS);
     if (realtime_ && !stream_ && fps > 1.0) {
         frame_period_ = std::chrono::duration<double>(1.0 / fps);
+    }
+
+    if (stream_) {
+        // A phone sends about 30 frames a second; the models consume rather
+        // fewer. read() hands over the *oldest* frame still queued in the
+        // decoder, so every frame the pipeline cannot keep up with adds a
+        // permanent frame of lag — the picture falls further behind the longer
+        // the run goes on, which is why the view ends up seconds late.
+        //
+        // Draining the queue on a thread of its own and keeping only the newest
+        // frame fixes it at the source: the pipeline is then always handed the
+        // present, and frames it had no time for are dropped instead of stored.
+        cap_.set(cv::CAP_PROP_BUFFERSIZE, 1);   // honoured by some backends only
+        grabbing_ = true;
+        grabber_  = std::thread(&FileInterface::grab_loop, this);
+    }
+}
+
+FileInterface::~FileInterface()
+{
+    grabbing_ = false;
+    if (grabber_.joinable()) grabber_.join();
+}
+
+void FileInterface::grab_loop()
+{
+    while (grabbing_) {
+        cv::Mat frame;
+        if (!cap_.read(frame) || frame.empty()) {
+            if (!reopen_stream()) {
+                stream_dead_ = true;
+                return;
+            }
+            continue;
+        }
+        std::lock_guard<std::mutex> lock(frame_mtx_);
+        latest_ = std::move(frame);
     }
 }
 
@@ -55,6 +111,19 @@ bool FileInterface::reopen_stream()
 std::tuple<bool, cv::Mat> FileInterface::get_latest_frame()
 {
     const auto t0 = std::chrono::steady_clock::now();
+
+    if (stream_) {
+        // Whatever arrived most recently, however many were dropped meanwhile.
+        for (int wait = 0; wait < 100; ++wait) {
+            {
+                std::lock_guard<std::mutex> lock(frame_mtx_);
+                if (!latest_.empty()) return {true, latest_.clone()};
+            }
+            if (stream_dead_) return {false, {}};
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return {false, {}};
+    }
 
     cv::Mat frame;
     if (!cap_.read(frame) || frame.empty()) {

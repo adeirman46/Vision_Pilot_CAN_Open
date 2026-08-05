@@ -10,7 +10,15 @@ add_library(navigation
         src/router.cpp
         src/map_renderer.cpp
         src/navigation.cpp
+        src/gps_imu_ekf.cpp
+        src/fused_gps.cpp
 )
+
+# Sits with the other sensor drivers, and still builds standalone.
+if (NOT TARGET imu_yahboom)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../sensing/imu_yahboom_10axis
+            ${CMAKE_BINARY_DIR}/imu_yahboom EXCLUDE_FROM_ALL)
+endif ()
 
 set_target_properties(navigation PROPERTIES
         CXX_STANDARD 17
@@ -27,6 +35,14 @@ target_link_libraries(navigation
         opencv_core
         opencv_imgproc
         Threads::Threads
+        imu_yahboom
         PRIVATE
         logging
 )
+
+# ─── Tests ───────────────────────────────────────────────────────────────────
+# A filter that runs is not a filter that works, and both failure modes are
+# silent on a map. This drives it along a known route and measures the error.
+add_executable(test_gps_imu_ekf tests/test_gps_imu_ekf.cpp)
+target_link_libraries(test_gps_imu_ekf PRIVATE navigation)
+target_compile_features(test_gps_imu_ekf PRIVATE cxx_std_17)

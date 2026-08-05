@@ -311,15 +311,53 @@ void draw_polyline_clipped(cv::Mat& img, const std::vector<cv::Point>& pts,
     }
 }
 
-void draw_ego(cv::Mat& img, cv::Point c, double heading_rad)
+// `known` is false when nothing has established which way the car is pointing.
+// That happens more often than it sounds: a bearing derived from successive GPS
+// fixes needs real travel before it means anything, so a car that is stopped,
+// crawling, or freshly started has no heading at all. Drawing a confident arrow
+// anyway would be inventing one — it would point north and look exactly like a
+// car facing north. A blunt disc says "position yes, direction no", which is the
+// truth, and the arrow returns the moment the fusion has a heading again.
+//
+// `accuracy_px` draws the uncertainty the fix reports as a halo. With the
+// GPS/IMU filter this shrinks as the filter converges and swells when fixes stop
+// arriving, so how much to trust the dot is visible rather than implied.
+void draw_ego(cv::Mat& img, cv::Point c, double heading_rad, bool known,
+              double accuracy_px)
 {
     const double s = 11.0;
+
+    if (accuracy_px > s * 1.6) {
+        cv::Mat halo = img.clone();
+        cv::circle(halo, c, static_cast<int>(std::min(accuracy_px, 400.0)),
+                   cv::Scalar(120, 150, 120), -1, cv::LINE_AA);
+        cv::addWeighted(halo, 0.16, img, 0.84, 0.0, img);
+        cv::circle(img, c, static_cast<int>(std::min(accuracy_px, 400.0)),
+                   cv::Scalar(90, 120, 90), 1, cv::LINE_AA);
+    }
+
+    cv::circle(img, c, static_cast<int>(s * 1.5), cv::Scalar(60, 90, 60), -1, cv::LINE_AA);
+    // A white ring round the disc so it reads at the same weight as the raw-GPS
+    // marker beside it in compare mode, and stays visible on a light basemap.
+    cv::circle(img, c, static_cast<int>(s * 1.05), cv::Scalar(40, 190, 40), -1, cv::LINE_AA);
+    cv::circle(img, c, static_cast<int>(s * 1.05), cv::Scalar(235, 245, 235), 2, cv::LINE_AA);
+
+    if (!known) {
+        cv::circle(img, c, static_cast<int>(s * 0.62), kEgo, -1, cv::LINE_AA);
+        cv::circle(img, c, static_cast<int>(s * 0.62), cv::Scalar(20, 60, 20), 1,
+                   cv::LINE_AA);
+        return;
+    }
+
     auto rot = [&](double x, double y) {
         return cv::Point(cvRound(c.x + x * std::cos(heading_rad) - y * std::sin(heading_rad)),
                          cvRound(c.y + x * std::sin(heading_rad) + y * std::cos(heading_rad)));
     };
+    // A ray ahead of the nose: on a moving map the triangle alone is small, and
+    // the direction of travel is the one thing that has to be readable at a
+    // glance.
+    cv::line(img, c, rot(0, -s * 2.6), cv::Scalar(150, 220, 150), 2, cv::LINE_AA);
     const std::vector<cv::Point> tri = {rot(0, -s), rot(-s * 0.66, s * 0.7), rot(s * 0.66, s * 0.7)};
-    cv::circle(img, c, static_cast<int>(s * 1.5), cv::Scalar(60, 90, 60), -1, cv::LINE_AA);
     cv::fillConvexPoly(img, tri, kEgo, cv::LINE_AA);
     cv::polylines(img, tri, true, cv::Scalar(20, 60, 20), 1, cv::LINE_AA);
 }
@@ -332,7 +370,11 @@ cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int 
     cv::Mat panel(height, width, CV_8UC3, kBackground);
 
     // kManeuverH is the arrow/distance part; the destination strip sits under it.
-    const int banner_h = view.route && view.route->valid ? kManeuverH + 30 : 0;
+    const int banner_body = view.route && view.route->valid ? kManeuverH + 30 : 0;
+    // The inset is part of the banner's footprint: the map has to start below
+    // both, or the turn arrow ends up underneath the search field.
+    const int banner_top = banner_body > 0 ? view.top_inset : 0;
+    const int banner_h   = banner_body > 0 ? banner_top + banner_body : 0;
     const int footer_h = 74;
     const int map_top    = banner_h;
     const int map_bottom = height - footer_h;
@@ -487,9 +529,43 @@ cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int 
                            width, map_h);
         g_basemap.img(src).copyTo(panel(cv::Rect(0, map_top, width, map_h)));
 
-        draw_ego(panel, ego_px, view.heading_up || !view.fix->has_bearing
-                                    ? 0.0
-                                    : view.fix->bearing_deg * M_PI / 180.0);
+        // The unfiltered receiver, when comparing. Drawn first so the fused
+        // marker sits on top: the gap between the two *is* the measurement —
+        // how far the raw fix jumps while the fused one stays on the road.
+        if (view.raw_fix) {
+            const double dn = (view.raw_fix->latitude - view.fix->latitude) *
+                              111132.0;
+            const double de = (view.raw_fix->longitude - view.fix->longitude) *
+                              111320.0 * std::cos(view.fix->latitude * M_PI / 180.0);
+            double rx = de, ry = dn;
+            if (view.heading_up && view.fix->has_bearing) {
+                const double a = -view.fix->bearing_deg * M_PI / 180.0;
+                const double nx = rx * std::cos(a) - ry * std::sin(a);
+                const double ny = rx * std::sin(a) + ry * std::cos(a);
+                rx = nx; ry = ny;
+            }
+            const cv::Point raw_px(ego_px.x + static_cast<int>(rx / m_per_px),
+                                   ego_px.y - static_cast<int>(ry / m_per_px));
+            // Two markers of equal weight, so neither looks like the "real" one:
+            // red is the bare receiver, green is the fused estimate. The line
+            // between them is the disagreement, which is the whole measurement.
+            // No label — at this size the text lands on top of both of them.
+            cv::line(panel, ego_px, raw_px, cv::Scalar(110, 110, 180), 1, cv::LINE_AA);
+            cv::circle(panel, raw_px, 11, cv::Scalar(70, 70, 190), -1, cv::LINE_AA);
+            cv::circle(panel, raw_px, 11, cv::Scalar(235, 235, 245), 2, cv::LINE_AA);
+            cv::circle(panel, raw_px, 4, cv::Scalar(235, 235, 245), -1, cv::LINE_AA);
+        }
+
+        {
+            const bool known = view.fix->has_bearing;
+            // Heading-up already rotated the world, so the marker points up the
+            // screen; north-up leaves the world alone and turns the marker.
+            const double ego_rot = (!known || view.heading_up)
+                                       ? 0.0
+                                       : view.fix->bearing_deg * M_PI / 180.0;
+            draw_ego(panel, ego_px, ego_rot, known,
+                     view.fix->accuracy_m > 0.0 ? view.fix->accuracy_m / m_per_px : 0.0);
+        }
 
         // ── Scale bar ────────────────────────────────────────────────────────
         {
@@ -545,20 +621,21 @@ cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int 
         if (!view.fix) {
             // A stale route with no current position: show the target, not a
             // manoeuvre distance that is no longer true.
-            text(panel, "Route paused - no position", cv::Point(16, 40), 0.52, kWarn);
+            text(panel, "Route paused - no position", cv::Point(16, banner_top + 40), 0.52, kWarn);
         } else if (idx >= 0 && idx < static_cast<int>(r.steps.size())) {
             const Step& s = r.steps[idx];
-            draw_maneuver(panel, s.type, cv::Point(52, kManeuverH / 2), 46, kTextMain);
+            draw_maneuver(panel, s.type, cv::Point(52, banner_top + kManeuverH / 2), 46, kTextMain);
             text(panel, format_distance(view.progress.distance_to_step_m),
-                 cv::Point(104, 40), 0.78, kTextMain, 2);
+                 cv::Point(104, banner_top + 40), 0.78, kTextMain, 2);
             const std::string what = s.road.empty()
                                          ? maneuver_text(s.type)
                                          : std::string(maneuver_text(s.type)) + " onto " + s.road;
-            text(panel, elide(what, width - 118, 0.46), cv::Point(104, 68), 0.46, kTextDim);
+            text(panel, elide(what, width - 118, 0.46), cv::Point(104, banner_top + 68), 0.46, kTextDim);
         }
 
         // Destination strip along the bottom of the banner.
-        cv::line(panel, cv::Point(12, kManeuverH), cv::Point(width - 12, kManeuverH),
+        cv::line(panel, cv::Point(12, banner_top + kManeuverH),
+                 cv::Point(width - 12, banner_top + kManeuverH),
                  kPanelEdge, 1);
         char dest_buf[96];
         if (!r.dest_name.empty()) {

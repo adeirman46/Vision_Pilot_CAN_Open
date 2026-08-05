@@ -52,6 +52,16 @@
 #                        stays smooth while the models run.
 #   --panel <px>         map panel width in px (760)
 #   --north-up           north-up map instead of heading-up
+#
+# IMU options (see scripts/inference_cam_nav_imu.sh):
+#   --imu                fuse the Yahboom IMU with the GPS. Position updates at
+#                        IMU rate instead of once a second, stops jumping between
+#                        fixes, and keeps a heading while the car is stopped.
+#   --imu-port <dev>     serial port. Default: the first /dev/ttyUSB* found
+#   --imu-baud <n>       line speed. Default: auto-detect
+#   --gps-only           raw receiver, no IMU — the baseline to compare against
+#   --compare            fuse, and draw the raw receiver beside the fused
+#                        position so the difference is visible while driving
 #   --output <WxH|fit>   canvas size. Default: the screen minus room for the
 #                        title bar, so the window manager never has to shrink
 #                        the window and the toolkit never pads it with white.
@@ -84,9 +94,9 @@
 # Env overrides: VP_ROOT, VP_BUILD, VP_CAM_URL, VP_GPS_URL
 set -euo pipefail
 
-VP_ROOT="${VP_ROOT:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}"
+VP_ROOT="${VP_ROOT:-$(cd "$(dirname "$(readlink -f "$0")")/../VisionPilot" && pwd)}"
 BUILD_DIR="${VP_BUILD:-$VP_ROOT/build}"
-DEFAULT_URL="${VP_CAM_URL:-http://10.146.137.141:8081/video}"
+DEFAULT_URL="${VP_CAM_URL:-http://10.156.218.103:8081/video}"
 DEFAULT_GPS="${VP_GPS_URL:-http://172.27.74.24:8080}"
 
 usage() { sed -n '2,64p' "$0"; exit "${1:-1}"; }
@@ -107,6 +117,11 @@ PROVIDER=""
 CHECK="false"
 ASK="false"       # --ask brings back the old terminal prompt
 VP_ARGS=()
+
+IMU="false"          # --imu turns on the GPS/IMU filter
+COMPARE="false"      # --compare also draws the unfiltered receiver
+IMU_PORT=""
+IMU_BAUD=""
 
 GPS="phyphox"
 GPS_URL=""
@@ -148,6 +163,14 @@ while [ $# -gt 0 ]; do
                        ZOOM="$2"; shift 2 ;;
         --panel)       [ $# -ge 2 ] || { echo "error: --panel needs a value" >&2; exit 1; }
                        PANEL="$2"; shift 2 ;;
+        --imu)         IMU="true"; shift ;;
+        --no-imu)      IMU="false"; shift ;;
+        --gps-only)    IMU="false"; COMPARE="false"; shift ;;
+        --compare)     IMU="true";  COMPARE="true";  shift ;;
+        --imu-port)    [ $# -ge 2 ] || { echo "error: --imu-port needs a device" >&2; exit 1; }
+                       IMU_PORT="$2"; IMU="true"; shift 2 ;;
+        --imu-baud)    [ $# -ge 2 ] || { echo "error: --imu-baud needs a value" >&2; exit 1; }
+                       IMU_BAUD="$2"; IMU="true"; shift 2 ;;
         --north-up)    HEADING_UP="false"; shift ;;
         --qt)          USE_QT="true"; shift ;;
         --opencv)      USE_QT="false"; shift ;;
@@ -290,7 +313,7 @@ MAP_FILE="${MAP_FILE:-$VP_ROOT/maps/bandung-roads.vpmap}"
 [ -f "$MAP_FILE" ] || {
     echo "error: navigation map not found: $MAP_FILE" >&2
     echo "       Build it once (greater Bandung, a few minutes):" >&2
-    echo "         $VP_ROOT/scripts/build_osm_map.sh" >&2
+    echo "         $(cd "$VP_ROOT/.." && pwd)/scripts/build_osm_map.sh" >&2
     exit 1; }
 
 # ── Destination by name ──────────────────────────────────────────────────────
@@ -387,7 +410,7 @@ fi
 [ -x "$BUILD_DIR/VisionPilot" ] || {
     echo "error: $BUILD_DIR/VisionPilot not built" >&2
     echo "       Set the machine up and build it in one step:" >&2
-    echo "         $(cd "$VP_ROOT/.." && pwd)/setup.sh" >&2
+    echo "         $(cd "$VP_ROOT/.." && pwd)/scripts/setup.sh" >&2
     exit 1; }
 
 WORK="$BUILD_DIR/run_inputs"
@@ -492,6 +515,10 @@ set_conf nav.heading_up  "$HEADING_UP" "$MAIN_CONF"
 set_conf nav.dark        "$DARK"       "$MAIN_CONF"
 set_conf nav.output_size "$OUTPUT_SIZE" "$MAIN_CONF"
 set_conf nav.gps_file    "$GPS_FILE" "$MAIN_CONF"
+set_conf nav.imu_enabled "$IMU"      "$MAIN_CONF"
+set_conf nav.imu_port    "$IMU_PORT" "$MAIN_CONF"
+set_conf nav.imu_baud    "${IMU_BAUD:-0}" "$MAIN_CONF"
+set_conf nav.compare_gps "$COMPARE"  "$MAIN_CONF"
 [ -n "$FIXED_POS" ] && set_conf nav.fixed_position   "$FIXED_POS" "$MAIN_CONF"
 set_conf nav.destination      "$DEST"      "$MAIN_CONF"
 set_conf nav.destination_name "$DEST_NAME" "$MAIN_CONF"
@@ -560,6 +587,13 @@ echo "   calib:  $CALIB_DESC"
 echo "   model:  $PRECISION_DESC on $PROVIDER_DESC"
 echo "   map:    $MAP_FILE"
 echo "   gps:    $NAV_DESC"
+if [ "$IMU" = "true" ]; then
+    echo "   imu:    ${IMU_PORT:-auto} @ ${IMU_BAUD:-auto} — GPS/IMU filter on"
+    [ "$COMPARE" = "true" ] &&
+        echo "   mode:   comparing — blue ring is the raw receiver, green is fused"
+else
+    echo "   imu:    off — raw GPS only (baseline)"
+fi
 echo "   layout: ${OUTPUT_SIZE}${FIT_DESC} canvas, ${PANEL}px panel, ${ZOOM} m across, $([ "$HEADING_UP" = "true" ] && echo "heading up" || echo "north up")"
 echo "   extra:  ${VP_ARGS[*]:-<none>}"
 echo "   stop with Ctrl-C"

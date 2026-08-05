@@ -196,6 +196,13 @@ Config load_vision_pilot_config()
         nav.gps_file    = expand_home(optional(kv, "nav.gps_file", ""));
         nav.gps_rate_hz = parse_double(optional(kv, "nav.gps_rate_hz", "2.0"),
                                        "nav.gps_rate_hz");
+
+        nav.imu_enabled = parse_bool(optional(kv, "nav.imu_enabled", "false"),
+                                     "nav.imu_enabled");
+        nav.imu_port    = optional(kv, "nav.imu_port", "");
+        nav.imu_baud    = parse_int(optional(kv, "nav.imu_baud", "0"), "nav.imu_baud");
+        nav.compare_gps = parse_bool(optional(kv, "nav.compare_gps", "false"),
+                                     "nav.compare_gps");
         parse_lat_lon(optional(kv, "nav.fixed_position", "-6.9175,107.6191"),
                       "nav.fixed_position", nav.fixed_lat, nav.fixed_lon);
 

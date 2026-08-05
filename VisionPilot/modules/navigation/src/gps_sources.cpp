@@ -12,6 +12,8 @@
 #include <logging/logger.hpp>
 #include <navigation/osm_map.hpp>   // kEarthR
 
+#include <navigation/fused_gps.hpp>
+
 #include "http_get.hpp"
 
 namespace navigation {
@@ -453,6 +455,18 @@ GpsSource parse_gps_source(const std::string& v)
 }
 
 std::unique_ptr<GpsInterface> make_gps_source(const Config& cfg)
+{
+    auto raw = make_raw_gps_source(cfg);
+
+    // The IMU wraps whatever receiver was configured rather than replacing it:
+    // the filter needs both, and with no GPS at all there is nothing to anchor
+    // dead reckoning to, so wrapping nothing would be worse than not wrapping.
+    if (cfg.imu_enabled && raw)
+        return std::make_unique<FusedImuGps>(std::move(raw), cfg.imu_port, cfg.imu_baud);
+    return raw;
+}
+
+std::unique_ptr<GpsInterface> make_raw_gps_source(const Config& cfg)
 {
     switch (cfg.gps_source) {
     case GpsSource::IpWebcam:

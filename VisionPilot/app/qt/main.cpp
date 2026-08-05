@@ -6,6 +6,7 @@
 // map on the GUI thread's own timer, so the interface stays responsive whatever
 // the models are doing.
 #include <QApplication>
+#include <QFont>
 
 #include <config/vision_pilot_config.hpp>
 #include <logging/logger.hpp>
@@ -14,7 +15,20 @@
 
 int main(int argc, char** argv)
 {
+    // Both of these must be set before the QApplication exists — afterwards
+    // they do nothing. Without them Qt lays every widget out in logical pixels,
+    // renders once at 1x, and lets the compositor stretch the result to the
+    // real screen. Text scaled from a low-resolution bitmap is exactly the soft,
+    // smeared lettering it looks like; asking for the true device pixel ratio
+    // makes the glyphs be rasterised at the size they are actually shown.
+    QApplication::setAttribute(Qt::AA_EnableHighDpiScaling, true);
+    QApplication::setAttribute(Qt::AA_UseHighDpiPixmaps, true);
+
     QApplication app(argc, argv);
+
+    QFont f = app.font();
+    f.setHintingPreference(QFont::PreferFullHinting);   // crisp stems at small sizes
+    app.setFont(f);
 
     Config cfg;
     try {

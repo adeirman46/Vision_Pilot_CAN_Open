@@ -2,6 +2,7 @@
 #define VISIONPILOT_QT_PIPELINE_WORKER_HPP
 
 #include <atomic>
+#include <mutex>
 
 #include <QImage>
 #include <QObject>
@@ -31,14 +32,24 @@ public:
     // GUI thread from the map match, read by the worker as it draws.
     void set_speed_limit_kph(int kph) { speed_limit_kph_ = kph; }
 
+    // The newest frame, whatever the GUI last managed to draw. Handing the
+    // image over through a slot instead of through the signal is what keeps the
+    // view live: see the note on frameReady().
+    QImage takeFrame();
+
 public slots:
     void run();     // blocks until stop() — invoke on the worker thread
     void stop();
 
 signals:
-    // The HUD frame, already drawn. Queued to the GUI thread, so it must own
-    // its pixels: QImage is copied before it is emitted.
-    void frameReady(const QImage& frame);
+    // "A new frame exists", carrying nothing. A queued signal with the image
+    // attached looks simpler but is why the view ran behind: every frame the
+    // pipeline produced became an event, the GUI thread could not scale them
+    // that fast, and the backlog — and with it the delay — grew without limit.
+    // Only ever one of these is outstanding, and it always refers to the newest
+    // frame, so the picture on screen is at most one frame old however slow the
+    // GUI gets.
+    void frameReady();
     // Vehicle speed in m/s and whether it came from a real source.
     void telemetry(double speed_ms, bool speed_valid);
     void failed(const QString& reason);
@@ -49,6 +60,10 @@ private:
     bool              debug_viz_;
     std::atomic<bool> running_{true};
     std::atomic<int>  speed_limit_kph_{0};
+
+    std::mutex        frame_mtx_;
+    QImage            latest_;
+    std::atomic<bool> frame_pending_{false};
 };
 
 // BGR cv::Mat → RGB QImage, deep-copied so it can cross threads safely.

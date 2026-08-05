@@ -33,6 +33,12 @@ public:
 
     // Human-readable label for the panel status line.
     virtual const char* name() const = 0;
+
+    // For a source that fuses several sensors: what the raw receiver reported,
+    // before any filtering. Drawing both is the only honest way to judge whether
+    // the fusion is helping — on the road there is no ground truth to compare
+    // against, so the comparison has to be against the thing it replaced.
+    virtual std::optional<GpsFix> raw_fix() const { return std::nullopt; }
 };
 
 }  // namespace navigation

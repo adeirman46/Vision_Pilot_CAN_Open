@@ -25,7 +25,7 @@
 # Env overrides: VP_ROOT, VP_OSM_CACHE
 set -euo pipefail
 
-VP_ROOT="${VP_ROOT:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}"
+VP_ROOT="${VP_ROOT:-$(cd "$(dirname "$(readlink -f "$0")")/../VisionPilot" && pwd)}"
 CACHE="${VP_OSM_CACHE:-$HOME/openpilot_maps/src}"
 
 # left,bottom,right,top (lon,lat,lon,lat) — same box openpilot's mapd uses.

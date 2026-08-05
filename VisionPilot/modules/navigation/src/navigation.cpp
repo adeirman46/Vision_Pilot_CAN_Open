@@ -372,6 +372,8 @@ cv::Mat Navigator::panel(int width, int height)
 cv::Mat Navigator::panel(int height)
 {
     MapView view;
+    if (cfg_.compare_gps && gps_) view.raw_fix = gps_->raw_fix();
+    view.top_inset = top_inset_;
     view.fix             = fix_;
     view.map_loaded      = map_.loaded();
     view.status          = error_.empty()

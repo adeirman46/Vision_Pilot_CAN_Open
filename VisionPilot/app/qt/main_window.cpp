@@ -68,10 +68,18 @@ MapView::MapView(navigation::Navigator* nav, QWidget* parent)
 void MapView::refresh()
 {
     if (!nav_) return;
-    // Rendered at the widget's own size, so there is no rescaling and the map
-    // is pixel-exact whatever the window is doing.
-    const cv::Mat panel = nav_->panel(std::max(160, width()), std::max(160, height()));
+    // Rendered at the widget's size *in real screen pixels*, not in logical
+    // ones. On a scaled display the two differ, and rendering at the logical
+    // size leaves Qt to stretch the result — which is what turned the road names
+    // and the manoeuvre banner soft. Tagging the image with the ratio tells Qt
+    // it is already at full resolution, so it is drawn one image pixel to one
+    // screen pixel.
+    const qreal dpr = devicePixelRatioF();
+    const int   w   = std::max(160, static_cast<int>(width() * dpr));
+    const int   h   = std::max(160, static_cast<int>(height() * dpr));
+    const cv::Mat panel = nav_->panel(w, h);
     image_ = mat_to_qimage(panel);
+    image_.setDevicePixelRatio(dpr);
     update();
 }
 
@@ -107,7 +115,10 @@ void MapView::mouseMoveEvent(QMouseEvent* e)
     drag_last_ = e->pos();
     // Repaint immediately rather than waiting for the next timer tick: the map
     // renders on the GUI thread now, so a drag can follow the pointer directly.
-    nav_->pan_by(d.x(), d.y());
+    // The pointer moves in logical pixels and the panel is drawn in real ones,
+    // so the delta has to be converted or the map slides slower than the hand.
+    const qreal dpr = devicePixelRatioF();
+    nav_->pan_by(d.x() * dpr, d.y() * dpr);
     refresh();
     emit panned();
 }
@@ -257,12 +268,30 @@ void MainWindow::clearRoute()
     map_->refresh();
 }
 
-void MainWindow::onFrame(const QImage& frame)
+void MainWindow::onFrame()
 {
+    const QImage frame = worker_->takeFrame();
     if (frame.isNull()) return;
-    camera_->setPixmap(QPixmap::fromImage(frame)
-                           .scaled(camera_->size(), Qt::KeepAspectRatio,
-                                   Qt::SmoothTransformation));
+
+    // Same story as the map: scale to real screen pixels and label the pixmap
+    // with the ratio, or the HUD text gets drawn small and stretched.
+    const qreal dpr    = camera_->devicePixelRatioF();
+    const QSize target = camera_->size() * dpr;
+
+    // Resampling by a few percent is the worst of both worlds: it costs the
+    // sharpness of every glyph the HUD drew and buys no extra size. A 1024-wide
+    // frame shown in a 960-wide panel is a 0.94x scale — enough to smear the
+    // lettering, not enough to be worth it. Inside that band, show the frame at
+    // its own size and let the panel letterbox it instead.
+    const double fit = std::min(target.width() / static_cast<double>(frame.width()),
+                                target.height() / static_cast<double>(frame.height()));
+
+    QPixmap pm = (fit > 0.88 && fit < 1.12)
+                     ? QPixmap::fromImage(frame)
+                     : QPixmap::fromImage(frame).scaled(target, Qt::KeepAspectRatio,
+                                                        Qt::SmoothTransformation);
+    pm.setDevicePixelRatio(dpr);
+    camera_->setPixmap(pm);
 }
 
 void MainWindow::onPipelineFailed(const QString& reason)
@@ -376,6 +405,12 @@ void MainWindow::positionOverlay()
     // Search across the top, the way a phone map app puts it.
     search_->setGeometry(pad, pad, w - 2 * pad, bar_h);
     search_->raise();
+
+    // Tell the renderer how much of its own top the search field is standing
+    // on, in the panel's pixels rather than the window's, so the next-turn arrow
+    // is drawn below it instead of behind it.
+    if (nav_) nav_->set_top_inset(
+        static_cast<int>((pad + bar_h + 6) * map_->devicePixelRatioF()));
 
     // Suggestions hang directly under the bar and never past the map's bottom.
     const int rows = std::max(1, results_->count());

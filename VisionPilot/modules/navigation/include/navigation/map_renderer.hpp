@@ -15,6 +15,12 @@ namespace navigation {
 // Everything the panel draws, gathered by Navigator so the renderer stays pure.
 struct MapView {
     std::optional<GpsFix> fix;
+    // The receiver's own answer, drawn beside the fused one when comparing.
+    std::optional<GpsFix> raw_fix;
+    // Pixels at the top of the panel the front-end has already claimed for its
+    // own widgets. The manoeuvre banner starts below this, so a search field
+    // floating over the map cannot bury the next turn.
+    int top_inset = 0;
     bool        map_loaded   = false;
     std::string status;             // shown when there is no fix yet
     std::string source_name;

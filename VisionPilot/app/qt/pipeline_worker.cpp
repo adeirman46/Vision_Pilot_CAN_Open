@@ -46,6 +46,13 @@ PipelineWorker::~PipelineWorker() = default;
 
 void PipelineWorker::stop() { running_ = false; }
 
+QImage PipelineWorker::takeFrame()
+{
+    frame_pending_ = false;
+    std::lock_guard<std::mutex> lock(frame_mtx_);
+    return latest_;
+}
+
 void PipelineWorker::run()
 {
     std::shared_ptr<CameraInterface>  camera;
@@ -134,7 +141,14 @@ void PipelineWorker::run()
             }
         }
 
-        emit frameReady(mat_to_qimage(display));
+        {
+            // Overwrite rather than queue: a frame the GUI never got round to
+            // drawing is of no use to anyone, and keeping it would only push the
+            // live picture further into the past.
+            std::lock_guard<std::mutex> lock(frame_mtx_);
+            latest_ = mat_to_qimage(display);
+        }
+        if (!frame_pending_.exchange(true)) emit frameReady();
         emit telemetry(ego_v, cfg_.vehicle_speed_valid);
     }
 

@@ -154,6 +154,8 @@ private:
 
 // Builds the source named by cfg.gps_source. Returns nullptr for GpsSource::None.
 std::unique_ptr<GpsInterface> make_gps_source(const Config& cfg);
+// The configured receiver on its own, without the IMU filter wrapped around it.
+std::unique_ptr<GpsInterface> make_raw_gps_source(const Config& cfg);
 
 }  // namespace navigation
 

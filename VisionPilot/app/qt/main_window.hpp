@@ -64,7 +64,7 @@ public:
     ~MainWindow() override;
 
 private slots:
-    void onFrame(const QImage& frame);
+    void onFrame();
     void onPipelineFailed(const QString& reason);
     void onSearchChanged(const QString& text);
     void onResultChosen(QListWidgetItem* item);

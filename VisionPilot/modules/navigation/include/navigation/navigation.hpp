@@ -91,6 +91,9 @@ public:
 
     // ── For a real UI front-end ──────────────────────────────────────────────
     const OsmMap& map() const { return map_; }
+    // Pixels at the top of the panel the front-end's own widgets occupy, so the
+    // manoeuvre banner can start below them instead of underneath them.
+    void   set_top_inset(int px) { top_inset_ = px; }
     void   set_dark(bool d) { cfg_.dark = d; }
     bool   dark() const { return cfg_.dark; }
     void   set_heading_up(bool h) { cfg_.heading_up = h; }
@@ -165,6 +168,7 @@ private:
     int      drag_last_x_ = 0, drag_last_y_ = 0;
     uint64_t last_pan_ms_ = 0;
     cv::Rect panel_rect_;
+    int      top_inset_ = 0;
 };
 
 }  // namespace navigation
