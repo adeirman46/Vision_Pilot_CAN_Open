@@ -196,6 +196,10 @@ Config load_vision_pilot_config()
         nav.gps_file    = expand_home(optional(kv, "nav.gps_file", ""));
         nav.gps_rate_hz = parse_double(optional(kv, "nav.gps_rate_hz", "2.0"),
                                        "nav.gps_rate_hz");
+        // The Nucleo's ST-LINK port. Empty = the first /dev/ttyACM* found.
+        nav.gps_port    = optional(kv, "nav.gps_port", "");
+        nav.gps_baud    = parse_int(optional(kv, "nav.gps_baud", "115200"),
+                                    "nav.gps_baud");
 
         nav.imu_enabled = parse_bool(optional(kv, "nav.imu_enabled", "false"),
                                      "nav.imu_enabled");

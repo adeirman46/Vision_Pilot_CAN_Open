@@ -28,7 +28,7 @@
 #   ./imu_view.sh --monitor
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$(readlink -f "$0")")/../VisionPilot/modules/sensing/imu_yahboom_10axis" && pwd)"
+ROOT="$(cd "$(dirname "$(readlink -f "$0")")/../../VisionPilot/modules/sensing/imu_yahboom_10axis" && pwd)"
 BUILD="$ROOT/build"
 
 usage() { sed -n '2,32p' "$0"; exit "${1:-1}"; }

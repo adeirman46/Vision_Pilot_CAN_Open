@@ -6,11 +6,11 @@
 # and builds VisionPilot — everything the README's Setup section does by hand. Run it
 # once after cloning, then run inference:
 #
-#   ./scripts/setup.sh
-#   scripts/run_inference.sh scene-0796
+#   ./scripts/build/setup.sh
+#   scripts/run/run_inference.sh scene-0796
 #
 # Usage:
-#   ./scripts/setup.sh [options]
+#   ./scripts/build/setup.sh [options]
 #
 # Options:
 #   --gpu | --cpu        force the CUDA/TensorRT build or the CPU-only build.
@@ -31,15 +31,15 @@
 #   -h, --help           this message.
 #
 # Examples:
-#   ./scripts/setup.sh                          # detect the GPU, install, build
-#   ./scripts/setup.sh --cpu                    # CPU-only machine
-#   ./scripts/setup.sh --skip-apt --clean       # rebuild from scratch, leave the system alone
-#   ./scripts/setup.sh --engines int8 --verify  # full setup, int8 engines, smoke test
+#   ./scripts/build/setup.sh                          # detect the GPU, install, build
+#   ./scripts/build/setup.sh --cpu                    # CPU-only machine
+#   ./scripts/build/setup.sh --skip-apt --clean       # rebuild from scratch, leave the system alone
+#   ./scripts/build/setup.sh --engines int8 --verify  # full setup, int8 engines, smoke test
 #
 # Env overrides: VP_BUILD (build dir), ORT_DIR (ONNX Runtime install dir)
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
 VP_ROOT="$REPO_ROOT/VisionPilot"
 BUILD_DIR="${VP_BUILD:-$VP_ROOT/build}"
 
@@ -145,7 +145,7 @@ CUDA_MAJOR=""
 if [ "$TARGET" = "gpu" ]; then
     CUDA_MAJOR="$(cuda_major)"
     [ -n "$CUDA_MAJOR" ] || die "GPU build requested but no CUDA toolkit was found.
-       Install CUDA 12 or 13, or set up for CPU with: ./scripts/setup.sh --cpu"
+       Install CUDA 12 or 13, or set up for CPU with: ./scripts/build/setup.sh --cpu"
 fi
 
 JOBS_NOTE=""
@@ -233,7 +233,7 @@ fi
 
 if [ "${#MISSING_CUDA_LIBS[@]}" -gt 0 ]; then
     note "note: ${MISSING_CUDA_LIBS[*]} not installed and not in any configured apt repository."
-    note "      Add NVIDIA's CUDA repo, or run on the cpu provider (./scripts/setup.sh --cpu)."
+    note "      Add NVIDIA's CUDA repo, or run on the cpu provider (./scripts/build/setup.sh --cpu)."
 fi
 if [ "$TARGET" = "gpu" ] && [ "$HAVE_TRT" = "false" ]; then
     note "note: no TensorRT (libnvinfer) found. The cuda provider works without it; the"
@@ -354,14 +354,14 @@ step "6/6  TensorRT engines"
 if [ -n "$ENGINES" ] && [ "$HAVE_TRT" = "false" ]; then
     die "--engines $ENGINES needs TensorRT, and no libnvinfer was found.
        Install the libnvinfer* build tagged +cuda${CUDA_MAJOR:-<your CUDA>} from NVIDIA's
-       repo, then: scripts/build_models.sh --precision $ENGINES
+       repo, then: scripts/build/build_models.sh --precision $ENGINES
        Everything else is built and ready — run_inference.sh works on the cuda provider."
 elif [ -n "$ENGINES" ]; then
-    "$REPO_ROOT/scripts/build_models.sh" --precision "$ENGINES"
+    "$REPO_ROOT/scripts/build/build_models.sh" --precision "$ENGINES"
     PROVIDER="tensorrt"; PRECISION="$ENGINES"
 else
-    note "skipped — only the tensorrt provider needs them (./scripts/setup.sh --engines int8,"
-    note "or scripts/build_models.sh --precision int8 later)"
+    note "skipped — only the tensorrt provider needs them (./scripts/build/setup.sh --engines int8,"
+    note "or scripts/build/build_models.sh --precision int8 later)"
 fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────
@@ -375,6 +375,6 @@ printf '      ./run_inference.sh scene-0796\n\n'
 
 if [ "$VERIFY" = "true" ]; then
     step "Smoke test — scene-0796, headless"
-    "$REPO_ROOT/scripts/run_inference.sh" scene-0796 --fast -- --no-window
+    "$REPO_ROOT/scripts/run/run_inference.sh" scene-0796 --fast -- --no-window
     step "Smoke test passed"
 fi

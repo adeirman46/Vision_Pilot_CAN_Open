@@ -42,7 +42,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 NAV="$HERE/inference_cam_nav.sh"
-IMU_VIEW="$HERE/imu_view.sh"
+IMU_VIEW="$HERE/../sensors/imu_view.sh"
 
 usage() { sed -n '2,38p' "$0"; exit "${1:-1}"; }
 

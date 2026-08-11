@@ -388,6 +388,267 @@ bool PhyphoxGps::fetch(GpsFix& fix, std::string& note)
     return true;
 }
 
+// ─── NucleoGps ───────────────────────────────────────────────────────────────
+
+namespace {
+
+// XOR of everything between '$' and '*', which is what an NMEA-style line is
+// framed with. Returns the body with the framing stripped, or empty on a line
+// that does not verify — and a line that does not verify is line noise, not a
+// position, so it is dropped rather than parsed.
+std::string verified_body(const std::string& line)
+{
+    const auto dollar = line.find('$');
+    if (dollar == std::string::npos) return {};
+    const auto star = line.rfind('*');
+    if (star == std::string::npos || star < dollar + 2) return {};
+    if (star + 2 >= line.size() + 1) return {};
+
+    const std::string body = line.substr(dollar + 1, star - dollar - 1);
+
+    uint8_t sum = 0;
+    for (char c : body) sum ^= static_cast<uint8_t>(c);
+
+    const std::string given = line.substr(star + 1, 2);
+    if (given.size() < 2) return {};
+    char* end = nullptr;
+    const long want = std::strtol(given.c_str(), &end, 16);
+    if (end != given.c_str() + 2) return {};
+
+    return (static_cast<long>(sum) == want) ? body : std::string{};
+}
+
+std::vector<std::string> split(const std::string& s, char sep)
+{
+    std::vector<std::string> out;
+    size_t start = 0;
+    while (true) {
+        const auto p = s.find(sep, start);
+        out.push_back(s.substr(start, p == std::string::npos ? p : p - start));
+        if (p == std::string::npos) break;
+        start = p + 1;
+    }
+    return out;
+}
+
+double to_d(const std::string& s) { return std::strtod(s.c_str(), nullptr); }
+
+}  // namespace
+
+NucleoGps::NucleoGps(const std::string& port, int baud)
+    : want_port_(port), baud_(baud > 0 ? baud : 115200)
+{
+    running_ = true;
+    thread_  = std::thread(&NucleoGps::run, this);
+}
+
+NucleoGps::~NucleoGps()
+{
+    running_ = false;
+    if (thread_.joinable()) thread_.join();
+    port_.close();
+}
+
+/* Open the configured port, or find one.
+ *
+ * The auto-detect looks for a CDC-ACM device, because that is what an ST-LINK
+ * enumerates as — a USB-serial bridge like the IMU's CH340 comes up as ttyUSB
+ * and is a different board entirely. Picking the wrong one here would look like
+ * a receiver that never sends a fix.
+ */
+bool NucleoGps::open_port(std::string& error)
+{
+    std::string dev = want_port_;
+    if (dev.empty()) {
+        for (const auto& p : imu::list_serial_ports()) {
+            if (p.rfind("/dev/ttyACM", 0) == 0) { dev = p; break; }
+        }
+    }
+    if (dev.empty()) {
+        error = "no /dev/ttyACM* device — is the Nucleo plugged in?";
+        return false;
+    }
+    return port_.open(dev, baud_, error);
+}
+
+void NucleoGps::run()
+{
+    bool     warned      = false;
+    uint64_t last_line_ms = 0;
+
+    while (running_) {
+        if (!port_.is_open()) {
+            std::string error;
+            if (!open_port(error)) {
+                if (!warned) {
+                    VP_WARN("[Nav] GPS: %s", error.c_str());
+                    warned = true;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(mtx_);
+                    status_ = "no board: " + error;
+                }
+                // The board may be plugged in later, or be mid-reset after a
+                // flash. Retry rather than giving up for the drive.
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                continue;
+            }
+            VP_INFO("[Nav] GPS: reading %s at %d baud", port_.device().c_str(), baud_);
+            warned       = false;
+            partial_.clear();
+            last_line_ms = now_ms();
+        }
+
+        uint8_t buf[512];
+        const int n = port_.read(buf, sizeof(buf), 200);
+        if (n < 0) {
+            // Unplugged mid-drive. Close and let the loop above find it again.
+            VP_WARN("[Nav] GPS: %s went away", port_.device().c_str());
+            port_.close();
+            continue;
+        }
+
+        for (int i = 0; i < n; ++i) {
+            const char c = static_cast<char>(buf[i]);
+            if (c == '\n' || c == '\r') {
+                if (!partial_.empty()) {
+                    consume(partial_);
+                    partial_.clear();
+                    last_line_ms = now_ms();
+                }
+            } else if (partial_.size() < 512) {
+                partial_.push_back(c);
+            } else {
+                partial_.clear();      // no line is this long; resynchronise
+            }
+        }
+
+        // The MCU sends something at least every couple of seconds even with no
+        // fix — $VPSTA if nothing else. Total silence means it is wedged or the
+        // port is being read by something else at the same time.
+        if (now_ms() - last_line_ms > 5000) {
+            std::lock_guard<std::mutex> lock(mtx_);
+            status_ = "silent for " + std::to_string((now_ms() - last_line_ms) / 1000) +
+                      "s — is pio device monitor still open?";
+        }
+
+        // A fix a second is no longer the whole story: the fused stream is
+        // 20 Hz, and dropping to the raw rate on a busy line would throw away
+        // exactly the smoothness this source exists to provide.
+        if (n == 0) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+}
+
+void NucleoGps::consume(const std::string& line)
+{
+    const std::string body = verified_body(line);
+    if (body.empty()) return;
+
+    if (body.rfind("VPFUS,", 0) == 0) {
+        parse_fused(body);
+    } else if (body.rfind("VPRTK,", 0) == 0) {
+        parse_raw(body);
+    } else if (body.rfind("VPSTA,", 0) == 0) {
+        // Everything that is not a position: boot, wiring faults, quality
+        // transitions, the 10 s health line. Worth logging as it arrives —
+        // this is where "the IMU is not connected" shows up, and it is the
+        // only place it shows up at all.
+        const auto comma = body.find(',', 6);
+        const std::string msg = (comma == std::string::npos) ? body : body.substr(comma + 1);
+        VP_INFO("[Nav] Nucleo: %s", msg.c_str());
+        std::lock_guard<std::mutex> lock(mtx_);
+        status_ = msg;
+    }
+}
+
+/* $VPFUS,<uptime_ms>,<lat>,<lon>,<speed_ms>,<heading_deg>,<sigma_m>,
+ *        <quality>,<imu_hz>,<yaw_bias_dps>
+ *
+ * The MCU has already fused GPS with the IMU, so speed and heading are the
+ * filter's own and are used as given — no derive_motion() here. <sigma_m> is
+ * the filter's estimate of its own position error, which is exactly what
+ * accuracy_m means downstream, and it grows honestly when the receiver drops
+ * out and the position becomes pure dead reckoning.
+ */
+bool NucleoGps::parse_fused(const std::string& body)
+{
+    const auto f = split(body, ',');
+    if (f.size() < 7) return false;
+
+    GpsFix fix;
+    fix.latitude    = to_d(f[2]);
+    fix.longitude   = to_d(f[3]);
+    if (!plausible(fix.latitude, fix.longitude)) return false;
+
+    fix.speed_ms    = to_d(f[4]);
+    fix.bearing_deg = to_d(f[5]);
+    fix.has_bearing = true;
+    fix.accuracy_m  = to_d(f[6]);
+    fix.stamp_ms    = now_ms();
+
+    std::lock_guard<std::mutex> lock(mtx_);
+    fused_         = fix;
+    last_fused_ms_ = fix.stamp_ms;
+    fused_active_  = true;
+    return true;
+}
+
+/* $VPRTK,<uptime_ms>,<utc>,<lat>,<lon>,<alt_m>,<geoid_sep_m>,<quality>,
+ *        <sats>,<hdop>,<accuracy_m>,<corr_age_s>,<base_id>
+ *
+ * The raw receiver. It reports no speed or course — the register interface
+ * carries neither — so those are derived from successive fixes, the same way
+ * every other position-only source here does it.
+ */
+bool NucleoGps::parse_raw(const std::string& body)
+{
+    const auto f = split(body, ',');
+    if (f.size() < 11) return false;
+
+    GpsFix fix;
+    fix.latitude   = to_d(f[3]);
+    fix.longitude  = to_d(f[4]);
+    if (!plausible(fix.latitude, fix.longitude)) return false;
+
+    fix.altitude_m = to_d(f[5]);
+    fix.accuracy_m = to_d(f[10]);
+    fix.stamp_ms   = now_ms();
+
+    std::lock_guard<std::mutex> lock(mtx_);
+    derive_motion(fix, prev_raw_ ? &*prev_raw_ : nullptr);
+    prev_raw_ = fix;
+    raw_      = fix;
+    return true;
+}
+
+std::optional<GpsFix> NucleoGps::read()
+{
+    std::lock_guard<std::mutex> lock(mtx_);
+
+    // Prefer the filtered position, but only while it is actually arriving. The
+    // MCU stops sending $VPFUS if its filter has no origin yet, and a fused
+    // position frozen two seconds ago is worse than a fresh raw one.
+    if (fused_ && now_ms() - last_fused_ms_ < 2000) return fused_;
+
+    if (fused_active_ && fused_) {
+        fused_active_ = false;
+        VP_WARN("[Nav] Nucleo: fused stream stopped, falling back to the raw receiver");
+    }
+    return raw_;
+}
+
+std::optional<GpsFix> NucleoGps::raw_fix() const
+{
+    std::lock_guard<std::mutex> lock(mtx_);
+    return raw_;
+}
+
+std::string NucleoGps::status() const
+{
+    std::lock_guard<std::mutex> lock(mtx_);
+    return status_;
+}
+
 // ─── FileGps ─────────────────────────────────────────────────────────────────
 
 FileGps::FileGps(const std::string& path) : file_(path)
@@ -449,14 +710,27 @@ GpsSource parse_gps_source(const std::string& v)
     if (v == "phyphox" || v == "phypox")              return GpsSource::Phyphox;
     if (v == "file"  || v == "track")                 return GpsSource::File;
     if (v == "fixed" || v == "static")                return GpsSource::Fixed;
+    if (v == "nucleo" || v == "rtk" || v == "stm32")  return GpsSource::Nucleo;
     if (v == "none"  || v == "off")                   return GpsSource::None;
     throw std::runtime_error("Invalid nav.gps_source: '" + v +
-                             "'. Use ipwebcam|phyphox|file|fixed|none");
+                             "'. Use ipwebcam|phyphox|nucleo|file|fixed|none");
 }
 
 std::unique_ptr<GpsInterface> make_gps_source(const Config& cfg)
 {
     auto raw = make_raw_gps_source(cfg);
+
+    // The Nucleo has already done this, on the board both sensors are wired to.
+    // Wrapping it in the host filter would run two EKFs in series, the second
+    // one fed a position that is already smoothed — which does not average out,
+    // it lags. Say so rather than quietly ignoring the flag: nav.imu_enabled is
+    // how the phone-IMU setup is switched on, and someone will carry it over.
+    if (cfg.imu_enabled && cfg.gps_source == GpsSource::Nucleo) {
+        VP_WARN("[Nav] nav.imu_enabled ignored: gps_source = nucleo is already "
+                "GPS/IMU fused on the board. Wire the IMU to the PC and use a "
+                "phone GPS source to run the filter on the host instead.");
+        return raw;
+    }
 
     // The IMU wraps whatever receiver was configured rather than replacing it:
     // the filter needs both, and with no GPS at all there is nothing to anchor
@@ -477,6 +751,8 @@ std::unique_ptr<GpsInterface> make_raw_gps_source(const Config& cfg)
         return std::make_unique<FileGps>(cfg.gps_file);
     case GpsSource::Fixed:
         return std::make_unique<FixedGps>(cfg.fixed_lat, cfg.fixed_lon);
+    case GpsSource::Nucleo:
+        return std::make_unique<NucleoGps>(cfg.gps_port, cfg.gps_baud);
     case GpsSource::None:
     default:
         return nullptr;

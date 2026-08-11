@@ -13,6 +13,8 @@ enum class GpsSource {
     Phyphox,    // phone running phyphox's Location experiment: /get?lat&lon
     File,       // recorded track, one "lat,lon[,speed_ms[,bearing_deg]]" per line
     Fixed,      // one static coordinate (exercises the map with no receiver)
+    Nucleo,     // Nucleo-G474RE on USB: $VPRTK / $VPFUS lines from the DFRobot
+                // GNSS-RTK rover, already GPS/IMU fused on the MCU
 };
 
 struct Config {
@@ -28,6 +30,13 @@ struct Config {
     double      fixed_lat  = -6.9175;    // Bandung city centre
     double      fixed_lon  = 107.6191;
     double      gps_rate_hz = 2.0;
+
+    // ── Nucleo receiver (gps_source = nucleo) ────────────────────────────────
+    // The ST-LINK virtual COM port the board publishes on. Empty picks the
+    // first /dev/ttyACM* found, which is the right answer whenever there is
+    // only one Nucleo plugged in.
+    std::string gps_port;
+    int         gps_baud = 115200;
 
     // ── IMU ──────────────────────────────────────────────────────────────────
     // With an IMU attached the position source becomes a GPS/IMU filter instead
@@ -66,7 +75,8 @@ struct Config {
     std::string degraded_reason;
 };
 
-// "ipwebcam" | "file" | "fixed" | "none" (also accepts "phone" for ipwebcam).
+// "ipwebcam" | "phyphox" | "nucleo" | "file" | "fixed" | "none" (also accepts
+// "phone" for ipwebcam and "rtk"/"stm32" for nucleo).
 // Throws std::runtime_error on anything else.
 GpsSource parse_gps_source(const std::string& value);
 

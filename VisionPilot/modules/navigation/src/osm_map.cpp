@@ -109,7 +109,7 @@ bool OsmMap::load(const std::string& path)
 
     std::ifstream f(path, std::ios::binary);
     if (!f) {
-        error_ = "cannot open map " + path + " — build it with scripts/build_osm_map.sh";
+        error_ = "cannot open map " + path + " — build it with scripts/build/build_osm_map.sh";
         return false;
     }
 
@@ -118,7 +118,7 @@ bool OsmMap::load(const std::string& path)
     const bool v2 = f && std::memcmp(magic, kMagic, sizeof(magic)) == 0;
     const bool v1 = f && std::memcmp(magic, kMagicV1, sizeof(magic)) == 0;
     if (!v1 && !v2) {
-        error_ = path + " is not a VPMAP file (rebuild it with scripts/build_osm_map.sh)";
+        error_ = path + " is not a VPMAP file (rebuild it with scripts/build/build_osm_map.sh)";
         return false;
     }
 

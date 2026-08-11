@@ -46,3 +46,11 @@ target_link_libraries(navigation
 add_executable(test_gps_imu_ekf tests/test_gps_imu_ekf.cpp)
 target_link_libraries(test_gps_imu_ekf PRIVATE navigation)
 target_compile_features(test_gps_imu_ekf PRIVATE cxx_std_17)
+
+# The Nucleo's wire format, checked against a verbatim capture through a pty.
+# A field read from the wrong end still checksums and still puts a plausible
+# coordinate on the map, so known bytes are the only way to catch it — and this
+# runs with no board plugged in.
+add_executable(test_nucleo_gps tests/test_nucleo_gps.cpp)
+target_link_libraries(test_nucleo_gps PRIVATE navigation)
+target_compile_features(test_nucleo_gps PRIVATE cxx_std_17)

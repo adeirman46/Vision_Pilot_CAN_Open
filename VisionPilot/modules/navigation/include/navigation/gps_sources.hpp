@@ -8,6 +8,8 @@
 #include <string>
 #include <thread>
 
+#include <imu/serial_port.hpp>
+
 #include <navigation/gps_interface.hpp>
 #include <navigation/nav_config.hpp>
 
@@ -115,6 +117,74 @@ protected:
 private:
     std::string base_;
     std::string url_;
+};
+
+// ─── Nucleo (DFRobot GNSS-RTK, optionally IMU-fused on the MCU) ──────────────
+//
+// The position source that is not a phone. A Nucleo-G474RE reads the DFRobot
+// GNSS-RTK rover over I2C — and, with the gps_imu_ekf firmware, a Yahboom IMU
+// over UART as well — and publishes checksummed lines on the ST-LINK serial
+// port. See modules/sensing/gps_rtk_dfrobot/.
+//
+//   $VPFUS,<uptime_ms>,<lat>,<lon>,<speed_ms>,<heading_deg>,<sigma_m>,
+//          <quality>,<imu_hz>,<yaw_bias_dps>*<xx>        20 Hz, filtered
+//   $VPRTK,<uptime_ms>,<utc>,<lat>,<lon>,<alt_m>,<geoid_sep_m>,<quality>,
+//          <sats>,<hdop>,<accuracy_m>,<corr_age_s>,<base_id>*<xx>   1 Hz, raw
+//   $VPSTA,<uptime_ms>,<message>*<xx>                     boot, faults, health
+//
+// Both position sentences are read, which is what makes one source work with
+// every firmware in that project: the fused build sends both and the fused one
+// wins; the GPS-only builds send $VPRTK alone and it is used directly. If the
+// MCU stops fusing mid-drive — IMU unplugged — this falls back to the raw fix
+// on its own, without the panel losing position.
+//
+// `raw_fix()` always returns the unfiltered receiver, so nav.compare_gps can
+// draw the two against each other on a real drive. That comparison is the only
+// honest way to judge the fusion: on the road there is no ground truth, so the
+// only thing to measure against is the thing it replaced.
+//
+// The checksum is what makes a serial port safe to open mid-sentence: a line
+// that does not verify is dropped rather than parsed into a wrong position.
+class NucleoGps : public GpsInterface
+{
+public:
+    // port empty = the first ST-LINK-looking device found (/dev/ttyACM*).
+    NucleoGps(const std::string& port, int baud);
+    ~NucleoGps() override;
+
+    std::optional<GpsFix> read() override;
+    // A board that was unplugged may come back, and the reader thread keeps
+    // trying — so this stays open the way a sleeping phone does.
+    bool                  is_open() const override { return true; }
+    const char*           name() const override { return "nucleo"; }
+    std::optional<GpsFix> raw_fix() const override;
+
+    // For the panel: whether the MCU is fusing, and what it last said.
+    bool        fused() const { return fused_active_; }
+    std::string status() const;
+
+private:
+    void run();
+    bool open_port(std::string& error);
+    void consume(const std::string& line);
+    bool parse_fused(const std::string& body);
+    bool parse_raw(const std::string& body);
+
+    std::string           want_port_;
+    int                   baud_;
+    imu::SerialPort       port_;
+    std::string           partial_;      // line still arriving
+
+    mutable std::mutex    mtx_;
+    std::optional<GpsFix> fused_;
+    std::optional<GpsFix> raw_;
+    std::optional<GpsFix> prev_raw_;     // for deriving speed and course
+    std::string           status_;
+    uint64_t              last_fused_ms_ = 0;
+
+    std::atomic<bool>     fused_active_{false};
+    std::atomic<bool>     running_{false};
+    std::thread           thread_;
 };
 
 // ─── Recorded track ──────────────────────────────────────────────────────────

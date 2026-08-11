@@ -11,11 +11,11 @@ fusion are all correct — which is what has to be true before the IMU is worth
 fusing with GPS.
 
 ```
-scripts/imu_view.sh                 # live 3D window
-scripts/imu_view.sh --monitor       # console readout, works over ssh
-scripts/imu_view.sh --probe         # report port, baud rate and protocol
-scripts/imu_view.sh --raw           # hex dump of the serial stream
-scripts/imu_view.sh --fix-port      # rebind the USB-serial driver
+scripts/sensors/imu_view.sh                 # live 3D window
+scripts/sensors/imu_view.sh --monitor       # console readout, works over ssh
+scripts/sensors/imu_view.sh --probe         # report port, baud rate and protocol
+scripts/sensors/imu_view.sh --raw           # hex dump of the serial stream
+scripts/sensors/imu_view.sh --fix-port      # rebind the USB-serial driver
 ```
 
 ## Layout
@@ -26,7 +26,7 @@ scripts/imu_view.sh --fix-port      # rebind the USB-serial driver
 | `viewer/` | Qt5 3D window. Software-rendered with `QPainter`, so it needs no GL context. |
 | `tools/imu_monitor.cpp` | Console monitor, raw sniffer and CSV logger. |
 | `tools/imu_sim.py` | Fake IMU on a virtual serial port — checks the tools with no hardware attached. |
-| `<repo>/scripts/imu_view.sh` | Launcher: builds if needed, sorts the serial port out, opens the view. |
+| `<repo>/scripts/sensors/imu_view.sh` | Launcher: builds if needed, sorts the serial port out, opens the view. |
 
 Build on its own, or as an `add_subdirectory()` of a larger tree:
 
@@ -146,7 +146,7 @@ fixes, not as an independent measurement.
 The board appears as `/dev/ttyUSB0` once the `ch341` driver owns the USB
 interface. On Ubuntu, `brltty` — the braille display daemon — claims CH340
 devices on sight and holds them through `usbfs`, so no serial node is ever
-created and the sensor looks dead. `scripts/imu_view.sh --fix-port` diagnoses
+created and the sensor looks dead. `scripts/sensors/imu_view.sh --fix-port` diagnoses
 and repairs it; the permanent fix is:
 
 ```bash

@@ -74,7 +74,7 @@ struct MapMatch {
 };
 
 // ─── The offline Bandung extract ─────────────────────────────────────────────
-// Loads the compact .vpmap built by scripts/build_osm_map.sh, and answers the
+// Loads the compact .vpmap built by scripts/build/build_osm_map.sh, and answers the
 // two questions the panel and the router ask: what is near this point, and what
 // road am I on. Everything is read once into memory (~10 MB for Bandung) — there
 // is no query thread and no network.

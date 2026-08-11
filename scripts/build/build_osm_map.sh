@@ -25,7 +25,7 @@
 # Env overrides: VP_ROOT, VP_OSM_CACHE
 set -euo pipefail
 
-VP_ROOT="${VP_ROOT:-$(cd "$(dirname "$(readlink -f "$0")")/../VisionPilot" && pwd)}"
+VP_ROOT="${VP_ROOT:-$(cd "$(dirname "$(readlink -f "$0")")/../../VisionPilot" && pwd)}"
 CACHE="${VP_OSM_CACHE:-$HOME/openpilot_maps/src}"
 
 # left,bottom,right,top (lon,lat,lon,lat) — same box openpilot's mapd uses.
@@ -136,5 +136,5 @@ echo ""
 echo " enable it in VisionPilot/config/vision_pilot.conf:"
 echo "   nav.enabled  = true"
 echo "   nav.map_file = $OUTPUT"
-echo " or run:  ./scripts/inference_cam.sh --nav"
+echo " or run:  ./scripts/run/inference_cam.sh --nav"
 echo "=================================================="

@@ -53,7 +53,7 @@
 #   --panel <px>         map panel width in px (760)
 #   --north-up           north-up map instead of heading-up
 #
-# IMU options (see scripts/inference_cam_nav_imu.sh):
+# IMU options (see scripts/run/inference_cam_nav_imu.sh):
 #   --imu                fuse the Yahboom IMU with the GPS. Position updates at
 #                        IMU rate instead of once a second, stops jumping between
 #                        fixes, and keeps a heading while the car is stopped.
@@ -89,14 +89,14 @@
 #   ./inference_cam_nav.sh --gps fixed --zoom 800        # no phone GPS needed
 #   ./inference_cam_nav.sh --check
 #
-# Build the map once first:  ./scripts/build_osm_map.sh
+# Build the map once first:  ./scripts/build/build_osm_map.sh
 #
 # Env overrides: VP_ROOT, VP_BUILD, VP_CAM_URL, VP_GPS_URL
 set -euo pipefail
 
-VP_ROOT="${VP_ROOT:-$(cd "$(dirname "$(readlink -f "$0")")/../VisionPilot" && pwd)}"
+VP_ROOT="${VP_ROOT:-$(cd "$(dirname "$(readlink -f "$0")")/../../VisionPilot" && pwd)}"
 BUILD_DIR="${VP_BUILD:-$VP_ROOT/build}"
-DEFAULT_URL="${VP_CAM_URL:-http://10.156.218.103:8081/video}"
+DEFAULT_URL="${VP_CAM_URL:-http://10.134.30.119:8081/video}"
 DEFAULT_GPS="${VP_GPS_URL:-http://172.27.74.24:8080}"
 
 usage() { sed -n '2,64p' "$0"; exit "${1:-1}"; }
@@ -313,7 +313,7 @@ MAP_FILE="${MAP_FILE:-$VP_ROOT/maps/bandung-roads.vpmap}"
 [ -f "$MAP_FILE" ] || {
     echo "error: navigation map not found: $MAP_FILE" >&2
     echo "       Build it once (greater Bandung, a few minutes):" >&2
-    echo "         $(cd "$VP_ROOT/.." && pwd)/scripts/build_osm_map.sh" >&2
+    echo "         $(cd "$VP_ROOT/.." && pwd)/scripts/build/build_osm_map.sh" >&2
     exit 1; }
 
 # ── Destination by name ──────────────────────────────────────────────────────
@@ -410,7 +410,7 @@ fi
 [ -x "$BUILD_DIR/VisionPilot" ] || {
     echo "error: $BUILD_DIR/VisionPilot not built" >&2
     echo "       Set the machine up and build it in one step:" >&2
-    echo "         $(cd "$VP_ROOT/.." && pwd)/scripts/setup.sh" >&2
+    echo "         $(cd "$VP_ROOT/.." && pwd)/scripts/build/setup.sh" >&2
     exit 1; }
 
 WORK="$BUILD_DIR/run_inputs"
