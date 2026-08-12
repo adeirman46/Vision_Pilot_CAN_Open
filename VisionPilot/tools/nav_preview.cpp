@@ -8,8 +8,11 @@
 // Prints the matched road and, with --dest, the route summary and its steps.
 #include <cstdio>
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
+#include <memory>
 #include <string>
+#include <thread>
 
 #include <opencv2/imgcodecs.hpp>
 
@@ -44,6 +47,12 @@ void usage()
         "  --zoom <m>         metres across the panel (default 400)\n"
         "  --size <WxH>       panel size in px (default 512x512)\n"
         "  --north-up         north-up instead of heading-up\n"
+        "  --light            light / daytime palette\n"
+        "  --satellite        aerial imagery under the roads\n"
+        "  --tiles <dir>      tile cache for --satellite (default ../maps/tiles)\n"
+        "  --tile-url <tpl>   tile URL with {z}/{x}/{y}\n"
+        "  --roads <mode>     road overlay on imagery: all (default) | major | off\n"
+        "  --road-opacity <a> how solidly it is drawn, 0..1 (default 0.85)\n"
         "  -o <file.png>      output image (default nav_preview.png)\n");
 }
 
@@ -52,10 +61,14 @@ void usage()
 int main(int argc, char** argv)
 {
     std::string map_path, out = "nav_preview.png", find_query, dest_query;
+    std::string tile_dir = "../maps/tiles", tile_url;
     double lat = 0.0, lon = 0.0, dest_lat = 0.0, dest_lon = 0.0;
     double heading = 0.0, zoom = 400.0, accuracy = 60.0;
     int w = 512, h = 512;
     bool have_at = false, have_dest = false, heading_up = true;
+    bool satellite = false, dark = true;
+    nav::RoadOverlay roads = nav::RoadOverlay::All;
+    double road_opacity = 0.85;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -73,6 +86,12 @@ int main(int argc, char** argv)
         else if (a == "--accuracy")  accuracy = std::atof(next().c_str());
         else if (a == "--zoom")      zoom = std::atof(next().c_str());
         else if (a == "--north-up")  heading_up = false;
+        else if (a == "--light")     dark = false;
+        else if (a == "--satellite") satellite = true;
+        else if (a == "--tiles")   { tile_dir = next(); satellite = true; }
+        else if (a == "--tile-url"){ tile_url = next(); satellite = true; }
+        else if (a == "--roads")   { roads = nav::parse_road_overlay(next()); }
+        else if (a == "--road-opacity") road_opacity = std::atof(next().c_str());
         else if (a == "-o")          out = next();
         else if (a == "--size") {
             const std::string s = next();
@@ -139,6 +158,9 @@ int main(int argc, char** argv)
     view.source_name = "preview";
     view.zoom_m     = zoom;
     view.heading_up = heading_up;
+    view.dark       = dark;
+    view.sat_roads  = roads;
+    view.sat_road_opacity = road_opacity;
 
     // Same rule as Navigator::update(): never match tighter than the fix.
     const double reach = std::clamp(accuracy, 60.0, 200.0);
@@ -174,6 +196,30 @@ int main(int argc, char** argv)
                         nav::maneuver_text(s.type), s.road.c_str());
         }
         if (route.steps.size() > 12) std::printf("  ... %zu more\n", route.steps.size() - 12);
+    }
+
+    // Imagery arrives after the frame that asked for it — that is the whole
+    // point of the non-blocking tile cache. A one-shot preview has no next
+    // frame, so render, wait for the queue to drain, and render again.
+    std::unique_ptr<nav::TileSource> tiles;
+    if (satellite) {
+        nav::TileSource::Options opt;
+        if (!tile_url.empty()) opt.url = tile_url;
+        opt.cache_dir = tile_dir;
+        tiles = std::make_unique<nav::TileSource>(std::move(opt));
+        view.satellite = true;
+        view.tiles     = tiles.get();
+
+        nav::render_map_panel(map, view, w, h);
+        for (int i = 0; i < 100 && tiles->pending() > 0; ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // The renderer coalesces arrivals over a short window before it repaints
+        // its basemap. A live map redraws again a frame later; a one-shot has to
+        // wait that window out or it writes the buffer from before the tiles.
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        if (!tiles->has_imagery())
+            std::fprintf(stderr, "warning: no imagery — check the network or %s\n",
+                         tile_dir.c_str());
     }
 
     const cv::Mat panel = nav::render_map_panel(map, view, w, h);

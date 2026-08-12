@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+# imgcodecs decodes the satellite tiles the raster basemap draws.
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 find_package(Threads REQUIRED)
 
 add_library(navigation
@@ -12,6 +13,7 @@ add_library(navigation
         src/navigation.cpp
         src/gps_imu_ekf.cpp
         src/fused_gps.cpp
+        src/tile_source.cpp
 )
 
 # Sits with the other sensor drivers, and still builds standalone.
@@ -34,6 +36,7 @@ target_link_libraries(navigation
         PUBLIC
         opencv_core
         opencv_imgproc
+        opencv_imgcodecs
         Threads::Threads
         imu_yahboom
         PRIVATE

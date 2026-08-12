@@ -716,6 +716,15 @@ GpsSource parse_gps_source(const std::string& v)
                              "'. Use ipwebcam|phyphox|nucleo|file|fixed|none");
 }
 
+RoadOverlay parse_road_overlay(const std::string& v)
+{
+    if (v == "all"   || v == "full" || v == "true")  return RoadOverlay::All;
+    if (v == "major" || v == "arterial")             return RoadOverlay::Major;
+    if (v == "off"   || v == "none" || v == "false") return RoadOverlay::Off;
+    throw std::runtime_error("Invalid nav.satellite_roads: '" + v +
+                             "'. Use all|major|off");
+}
+
 std::unique_ptr<GpsInterface> make_gps_source(const Config& cfg)
 {
     auto raw = make_raw_gps_source(cfg);

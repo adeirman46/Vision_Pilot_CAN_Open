@@ -32,6 +32,7 @@ namespace visualization
         static void on_mouse(int event, int x, int y, int flags, void* self);
         std::mutex  mouse_mtx_;
         MouseState  mouse_;
+        int         press_x_ = 0, press_y_ = 0;   // to tell a click from a drag
     };
 }
 

@@ -1,3 +1,5 @@
+#include <cstdlib>
+
 #include <opencv2/highgui.hpp>
 #include <visualization/local_display.hpp>
 #include <visualization/visualization.hpp>
@@ -47,8 +49,19 @@ namespace visualization
         d->mouse_.x = x;
         d->mouse_.y = y;
         d->mouse_.inside = true;
-        if (event == cv::EVENT_LBUTTONDOWN) d->mouse_.left_down = true;
-        if (event == cv::EVENT_LBUTTONUP)   d->mouse_.left_down = false;
+        if (event == cv::EVENT_LBUTTONDOWN) {
+            d->mouse_.left_down = true;
+            d->press_x_ = x;
+            d->press_y_ = y;
+        }
+        if (event == cv::EVENT_LBUTTONUP) {
+            d->mouse_.left_down = false;
+            // A press and release in the same place is a click; one that
+            // travelled was somebody moving the map, and must not be read as
+            // "go here".
+            if (std::abs(x - d->press_x_) <= 4 && std::abs(y - d->press_y_) <= 4)
+                ++d->mouse_.clicks;
+        }
         // Some builds report the button only in `flags`; trust that when it is
         // there, so a drag that started outside the window still tracks.
         if (event == cv::EVENT_MOUSEMOVE)
@@ -61,7 +74,8 @@ namespace visualization
     {
         std::lock_guard<std::mutex> lock(mouse_mtx_);
         MouseState out = mouse_;
-        mouse_.wheel = 0;      // wheel notches are consumed, position persists
+        mouse_.wheel  = 0;     // wheel notches are consumed, position persists
+        mouse_.clicks = 0;
         return out;
     }
 

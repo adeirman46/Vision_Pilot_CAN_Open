@@ -513,6 +513,10 @@ set_conf nav.zoom_m      "$ZOOM"     "$MAIN_CONF"
 set_conf nav.panel_width "$PANEL"    "$MAIN_CONF"
 set_conf nav.heading_up  "$HEADING_UP" "$MAIN_CONF"
 set_conf nav.dark        "$DARK"       "$MAIN_CONF"
+# This is the drawn-map script; inference_cam_nav_mp.sh is the satellite one.
+# Written every run so that going back and forth between the two always gives
+# the panel this script promises, never the one the other left behind.
+set_conf nav.satellite   "false"       "$MAIN_CONF"
 set_conf nav.output_size "$OUTPUT_SIZE" "$MAIN_CONF"
 set_conf nav.gps_file    "$GPS_FILE" "$MAIN_CONF"
 set_conf nav.imu_enabled "$IMU"      "$MAIN_CONF"

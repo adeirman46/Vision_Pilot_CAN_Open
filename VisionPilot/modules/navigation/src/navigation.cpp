@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 
 #include <opencv2/imgproc.hpp>
 
@@ -55,6 +56,8 @@ Navigator::Navigator(const Config& cfg) : cfg_(cfg)
 
     ready_ = map_.loaded() && gps_ != nullptr;
 
+    if (cfg_.satellite) ensure_tiles();
+
     if (cfg_.has_destination) {
         dest_lat_   = cfg_.dest_lat;
         dest_lon_   = cfg_.dest_lon;
@@ -75,6 +78,66 @@ Navigator::~Navigator()
     if (worker_.joinable()) worker_.join();
     // The GPS poll thread lives inside the source and stops in its destructor.
     gps_.reset();
+}
+
+void Navigator::ensure_tiles()
+{
+    if (tiles_) return;
+    TileSource::Options opt;
+    opt.url         = cfg_.tile_url;
+    opt.cache_dir   = cfg_.tile_cache_dir;
+    opt.attribution = cfg_.tile_attribution;
+    opt.max_zoom    = cfg_.tile_max_zoom;
+    opt.offline     = cfg_.tile_offline;
+    tiles_ = std::make_unique<TileSource>(std::move(opt));
+}
+
+void Navigator::set_satellite(bool s)
+{
+    cfg_.satellite = s;
+    if (s) ensure_tiles();
+}
+
+bool Navigator::panel_px_to_lat_lon(double px, double py, double& lat, double& lon) const
+{
+    return navigation::panel_px_to_lat_lon(proj_, px, py, lat, lon);
+}
+
+bool Navigator::set_destination_at_panel_px(double px, double py)
+{
+    double lat = 0.0, lon = 0.0;
+    if (!panel_px_to_lat_lon(px, py, lat, lon)) return false;
+    if (!map_.loaded()) return false;
+
+    // Name the pin after the road it landed on. The router snaps the
+    // destination to the network itself, so the coordinate stays exactly where
+    // the finger went — the pin marks the place that was pointed at, not the
+    // nearest thing the map happens to know a name for.
+    std::string name;
+    const MapMatch m = map_.match(lat, lon, 250.0);
+    if (m.valid) name = map_.way_name(map_.ways()[m.way]);
+    if (name.empty()) {
+        char buf[48];
+        std::snprintf(buf, sizeof(buf), "%.5f, %.5f", lat, lon);
+        name = buf;
+    }
+
+    VP_INFO("[Nav] destination tapped on the map: %.6f, %.6f (%s)", lat, lon,
+            name.c_str());
+    set_destination(lat, lon, name);
+    return true;
+}
+
+bool Navigator::set_destination_at_canvas_px(int x, int y)
+{
+    if (panel_rect_.width <= 0 || panel_rect_.height <= 0) return false;
+    if (!panel_rect_.contains(cv::Point(x, y))) return false;
+    if (panel_render_size_.width <= 0 || panel_render_size_.height <= 0) return false;
+
+    const double sx = static_cast<double>(panel_render_size_.width) / panel_rect_.width;
+    const double sy = static_cast<double>(panel_render_size_.height) / panel_rect_.height;
+    return set_destination_at_panel_px((x - panel_rect_.x) * sx,
+                                       (y - panel_rect_.y) * sy);
 }
 
 void Navigator::set_destination(double lat, double lon, const std::string& name)
@@ -398,12 +461,17 @@ cv::Mat Navigator::panel(int height)
     view.pan_x           = pan_x_;
     view.pan_y           = pan_y_;
     view.panned          = panned_;
+    view.satellite       = cfg_.satellite;
+    view.tiles           = tiles_.get();
+    view.sat_roads       = cfg_.sat_roads;
+    view.sat_road_opacity = cfg_.sat_road_opacity;
 
     // Hold the lock across the render: the worker may swap the route in, and the
     // renderer walks its node list.
     std::lock_guard<std::mutex> lock(route_mtx_);
     if (route_.valid) view.route = &route_;
-    return render_map_panel(map_, view, cfg_.panel_width, height);
+    panel_render_size_ = cv::Size(cfg_.panel_width, height);
+    return render_map_panel(map_, view, cfg_.panel_width, height, &proj_);
 }
 
 cv::Mat Navigator::compose(const cv::Mat& frame)

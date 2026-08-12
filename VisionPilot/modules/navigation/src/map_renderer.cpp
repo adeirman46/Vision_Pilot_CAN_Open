@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <vector>
 
 #include <opencv2/imgproc.hpp>
@@ -278,6 +279,13 @@ struct BasemapCache {
     int     w = 0, h = 0;
     double  pan_x = 0, pan_y = 0;    // pan the buffer was drawn for
     size_t  route_fp = 0;
+    bool    satellite = false;
+    RoadOverlay sat_roads = RoadOverlay::All;
+    double  sat_road_opacity = 0.85;
+    int     tiles_painted = 0;       // 0 = imagery asked for but none arrived
+    int     tiles_pending = 0;       // still in flight when this was drawn
+    int     served_at = -1;          // TileSource::served() at that moment
+    int64   redrawn_at = 0;          // getTickCount(), throttles the tile refill
 };
 BasemapCache g_basemap;
 constexpr int kBasemapMargin = 260;   // px of slack around the panel
@@ -362,9 +370,146 @@ void draw_ego(cv::Mat& img, cv::Point c, double heading_rad, bool known,
     cv::polylines(img, tri, true, cv::Scalar(20, 60, 20), 1, cv::LINE_AA);
 }
 
+// ─── Aerial imagery ──────────────────────────────────────────────────────────
+// The panel works in a local tangent plane around the fix; tiles are squares of
+// Web Mercator. Over the few hundred metres a tile covers the difference
+// between the two is a conformal map — a rotation and a scale — so each tile is
+// placed with the affine transform that takes three of its corners to where the
+// panel's own projection puts them. That is a warpAffine per tile rather than a
+// per-pixel reprojection, and it is exact to well under a pixel at these zooms.
+//
+// `project` is the caller's buffer-space projection; `unproject` its inverse,
+// needed to work out which tiles the buffer covers at all.
+struct Mosaic {
+    int painted = 0;   // 0 → fall back to the drawn map
+    int pending = 0;   // still in flight, so this buffer is worth redrawing
+};
+
+Mosaic draw_tile_mosaic(cv::Mat& dst, TileSource& tiles, double m_per_px,
+                        double centre_lat,
+                        const std::function<cv::Point2d(double, double)>& project,
+                        const std::function<void(double, double, double&, double&)>& unproject)
+{
+    // Pick the zoom whose pixels are closest to the panel's own, one level in
+    // reserve: sharper is cheap to downscale, blurrier can never be recovered.
+    int z = 1;
+    for (int cand = 1; cand <= tiles.max_zoom(); ++cand) {
+        z = cand;
+        if (tile_resolution_m(cand, centre_lat) <= m_per_px) break;
+    }
+
+    // The tile range the buffer covers, from its own four corners. Corners
+    // rather than the centre plus a radius: under rotation the covered region
+    // is a rotated rectangle, and a radius would fetch a circle around it.
+    double min_tx = 1e18, max_tx = -1e18, min_ty = 1e18, max_ty = -1e18;
+    const double cx[4] = {0.0, static_cast<double>(dst.cols), 0.0,
+                          static_cast<double>(dst.cols)};
+    const double cy[4] = {0.0, 0.0, static_cast<double>(dst.rows),
+                          static_cast<double>(dst.rows)};
+    for (int i = 0; i < 4; ++i) {
+        double lat = 0.0, lon = 0.0;
+        unproject(cx[i], cy[i], lat, lon);
+        double tx = 0.0, ty = 0.0;
+        lat_lon_to_tile(lat, lon, z, tx, ty);
+        min_tx = std::min(min_tx, tx); max_tx = std::max(max_tx, tx);
+        min_ty = std::min(min_ty, ty); max_ty = std::max(max_ty, ty);
+    }
+
+    const int x0 = static_cast<int>(std::floor(min_tx));
+    const int x1 = static_cast<int>(std::floor(max_tx));
+    const int y0 = static_cast<int>(std::floor(min_ty));
+    const int y1 = static_cast<int>(std::floor(max_ty));
+    // A corner that unprojected somewhere absurd (no fix, a pathological zoom)
+    // must not turn into a million-tile loop.
+    if (static_cast<int64_t>(x1 - x0 + 1) * (y1 - y0 + 1) > 400) return {};
+
+    Mosaic result;
+    for (int ty = y0; ty <= y1; ++ty) {
+        for (int tx = x0; tx <= x1; ++tx) {
+            TileSource::State state = TileSource::State::Missing;
+            const cv::Mat tile = tiles.get(z, tx, ty, &state);
+            if (state == TileSource::State::Pending) ++result.pending;
+            if (tile.empty()) continue;
+
+            // Three corners are enough to pin an affine down; the fourth would
+            // over-determine it.
+            //
+            // The source corners are pulled half a pixel inside the tile while
+            // the destination corners stay where the projection puts them, which
+            // stretches each tile that half pixel past its own edge. Without it
+            // the outermost sample of every tile falls on the border and
+            // BORDER_TRANSPARENT leaves it alone — a dark one-pixel grid over
+            // the whole mosaic, exactly where the tile seams are.
+            constexpr float kBleed = 0.5f;
+            double lat = 0.0, lon = 0.0;
+            cv::Point2f src_pt[3] = {
+                {kBleed, kBleed},
+                {static_cast<float>(tile.cols) - kBleed, kBleed},
+                {kBleed, static_cast<float>(tile.rows) - kBleed}};
+            cv::Point2f dst_pt[3];
+            const int corner_tx[3] = {tx, tx + 1, tx};
+            const int corner_ty[3] = {ty, ty, ty + 1};
+            for (int i = 0; i < 3; ++i) {
+                tile_to_lat_lon(corner_tx[i], corner_ty[i], z, lat, lon);
+                const cv::Point2d p = project(lat, lon);
+                dst_pt[i] = cv::Point2f(static_cast<float>(p.x), static_cast<float>(p.y));
+            }
+
+            // Where this tile lands, so the warp writes into a few hundred
+            // pixels instead of the whole buffer once per tile.
+            const cv::Point2f d3(dst_pt[1].x + dst_pt[2].x - dst_pt[0].x,
+                                 dst_pt[1].y + dst_pt[2].y - dst_pt[0].y);
+            float lo_x = dst_pt[0].x, hi_x = dst_pt[0].x;
+            float lo_y = dst_pt[0].y, hi_y = dst_pt[0].y;
+            for (const cv::Point2f& p : {dst_pt[1], dst_pt[2], d3}) {
+                lo_x = std::min(lo_x, p.x); hi_x = std::max(hi_x, p.x);
+                lo_y = std::min(lo_y, p.y); hi_y = std::max(hi_y, p.y);
+            }
+            cv::Rect roi(static_cast<int>(std::floor(lo_x)) - 1,
+                         static_cast<int>(std::floor(lo_y)) - 1,
+                         static_cast<int>(std::ceil(hi_x - lo_x)) + 3,
+                         static_cast<int>(std::ceil(hi_y - lo_y)) + 3);
+            roi &= cv::Rect(0, 0, dst.cols, dst.rows);
+            if (roi.width <= 0 || roi.height <= 0) continue;
+
+            cv::Mat m = cv::getAffineTransform(src_pt, dst_pt);
+            m.at<double>(0, 2) -= roi.x;
+            m.at<double>(1, 2) -= roi.y;
+
+            cv::Mat out = dst(roi);
+            // BORDER_TRANSPARENT: the parts of the ROI this tile does not cover
+            // belong to its neighbours, and must survive the warp.
+            cv::warpAffine(tile, out, m, roi.size(), cv::INTER_LINEAR,
+                           cv::BORDER_TRANSPARENT);
+            ++result.painted;
+        }
+    }
+    return result;
+}
+
 }  // namespace
 
-cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int height)
+bool panel_px_to_lat_lon(const PanelProjection& p, double px, double py,
+                         double& lat, double& lon)
+{
+    if (!p.valid || p.m_per_px <= 0.0) return false;
+    if (py < p.map_top || py > p.map_bottom) return false;
+
+    // Undo the projection render_map_panel applied: screen offset → rotated
+    // metres → east/north → degrees.
+    const double rx = (px - p.ego_x) * p.m_per_px;
+    const double ry = (p.ego_y - py) * p.m_per_px;
+    const double east  =  rx * p.cr + ry * p.sr;
+    const double north = -rx * p.sr + ry * p.cr;
+
+    lat = p.ref_lat + north / kEarthR * 180.0 / M_PI;
+    lon = p.ref_lon + east / (kEarthR * std::max(0.2, std::cos(p.ref_lat * M_PI / 180.0))) *
+                          180.0 / M_PI;
+    return true;
+}
+
+cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int height,
+                         PanelProjection* out_proj)
 {
     set_theme(view.dark);
     cv::Mat panel(height, width, CV_8UC3, kBackground);
@@ -408,6 +553,23 @@ cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int 
             static_cast<int>(std::clamp(ego_px.y - ry / m_per_px, -1e5, 1e5)));
     };
 
+    if (out_proj) {
+        out_proj->valid      = view.fix.has_value() && map.loaded();
+        out_proj->ref_lat    = ref_lat;
+        out_proj->ref_lon    = ref_lon;
+        out_proj->m_per_px   = m_per_px;
+        out_proj->cr         = cr;
+        out_proj->sr         = sr;
+        out_proj->ego_x      = ego_px.x;
+        out_proj->ego_y      = ego_px.y;
+        out_proj->map_top    = map_top;
+        out_proj->map_bottom = map_bottom;
+    }
+
+    // Imagery is only ever a background: with no tiles yet the drawn map has to
+    // come back, or the panel goes blank the moment the network does.
+    bool imagery_drawn = false;
+
     if (view.fix && map.loaded()) {
         // ── Basemap: drawn into an oversized buffer, reused between frames ───
         const int BW = width + 2 * kBasemapMargin;
@@ -418,11 +580,28 @@ cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int 
         // the window near the edge of what the buffer covers.
         const bool drifted = std::abs(view.pan_x - g_basemap.pan_x) > kBasemapMargin - 60 ||
                              std::abs(view.pan_y - g_basemap.pan_y) > kBasemapMargin - 60;
+        // Tiles arrive after the frame that asked for them, so a buffer drawn
+        // with some still in flight has to be drawn again to pick them up.
+        // Two conditions, and both matter: that buffer was actually missing
+        // tiles (a square the server does not have never arrives, so the queue
+        // is the wrong thing to watch), and a tile has landed since it was
+        // drawn. The 150 ms floor only coalesces bursts — it can never lose the
+        // last tile, because the served count stays different until the redraw
+        // that consumes it.
+        const int64 now_tick = cv::getTickCount();
+        const bool filling =
+            view.satellite && view.tiles && g_basemap.tiles_pending > 0 &&
+            view.tiles->served() != g_basemap.served_at &&
+            (now_tick - g_basemap.redrawn_at) >
+                static_cast<int64>(cv::getTickFrequency() * 0.15);
         const bool stale = !g_basemap.valid || g_basemap.w != BW || g_basemap.h != BH ||
                            g_basemap.ref_lat != ref_lat || g_basemap.ref_lon != ref_lon ||
                            g_basemap.rot != rot || g_basemap.m_per_px != m_per_px ||
                            g_basemap.route_fp != fp || g_basemap.dark != view.dark ||
-                           drifted;
+                           g_basemap.satellite != view.satellite ||
+                           g_basemap.sat_roads != view.sat_roads ||
+                           g_basemap.sat_road_opacity != view.sat_road_opacity ||
+                           drifted || filling;
 
         if (stale) {
             if (g_basemap.img.rows != BH || g_basemap.img.cols != BW)
@@ -459,6 +638,35 @@ cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int 
                                  (kEarthR * std::max(0.2, std::cos(ref_lat * M_PI / 180.0)))
                                  * 180.0 / M_PI;
 
+            // ── Aerial imagery, under everything the map draws ───────────────
+            Mosaic mosaic;
+            if (view.satellite && view.tiles) {
+                auto bunproject = [&](double px, double py, double& lat, double& lon) {
+                    const double rx = (px - bx) * m_per_px;
+                    const double ry = (by - py) * m_per_px;
+                    const double e =  rx * cr + ry * sr;
+                    const double n = -rx * sr + ry * cr;
+                    lat = ref_lat + n / kEarthR * 180.0 / M_PI;
+                    lon = ref_lon + e / (kEarthR * std::max(0.2, std::cos(ref_lat * M_PI / 180.0))) *
+                                        180.0 / M_PI;
+                };
+                mosaic = draw_tile_mosaic(
+                    g_basemap.img, *view.tiles, m_per_px, ref_lat,
+                    [&](double lat, double lon) {
+                        double e, n;
+                        lat_lon_to_en(lat, lon, ref_lat, ref_lon, e, n);
+                        return cv::Point2d(bx + (e * cr - n * sr) / m_per_px,
+                                           by - (e * sr + n * cr) / m_per_px);
+                    },
+                    bunproject);
+
+                // Night: knock the imagery back so the amber route and the green
+                // ego read against it instead of competing with a sunlit city.
+                if (mosaic.painted > 0 && view.dark)
+                    g_basemap.img.convertTo(g_basemap.img, -1, 0.78, -6);
+            }
+            const bool over_imagery = mosaic.painted > 0;
+
             const double reach_m = std::hypot(BW, BH) * 0.5 * m_per_px + 100.0;
             const double dlat = reach_m / kEarthR * 180.0 / M_PI;
             const double dlon = dlat / std::max(0.2, std::cos(c_lat * M_PI / 180.0));
@@ -468,10 +676,27 @@ cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int 
 
             // Two passes so arterials are not cut by the streets crossing them:
             // casings first, then the fills.
+            //
+            // Over imagery the same network is drawn, at the same widths and in
+            // the same order — that is the point of it: the picture shows where
+            // the tarmac is, these lines show where the map thinks it is, and
+            // the route, the map match and the speed limit all come from the
+            // map. Seeing the two together is what makes the panel precise. The
+            // only difference is that the whole overlay goes down into a copy
+            // and is blended back, so the photograph is dimmed by it rather than
+            // replaced.
+            const bool blend_roads = over_imagery && view.sat_road_opacity < 0.99;
+            cv::Mat road_layer;
+            cv::Mat& road_dst = blend_roads ? (road_layer = g_basemap.img.clone())
+                                            : g_basemap.img;
+            const bool major_only = over_imagery && view.sat_roads == RoadOverlay::Major;
+            const bool no_roads   = over_imagery && view.sat_roads == RoadOverlay::Off;
+
             std::vector<cv::Point> pts;
-            for (int pass = 0; pass < 2; ++pass) {
+            for (int pass = 0; pass < 2 && !no_roads; ++pass) {
                 for (const uint32_t wi : ids) {
                     const Way& w = map.ways()[wi];
+                    if (major_only && w.road_class > kTertiary) continue;
                     const RoadStyle st = style_for(w.road_class, (w.flags & kLink) != 0);
                     pts.clear();
                     pts.reserve(w.nodes.size());
@@ -481,12 +706,16 @@ cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int 
                     }
                     if (pts.size() < 2) continue;
                     if (pass == 0)
-                        draw_polyline_clipped(g_basemap.img, pts, kCasing,
+                        draw_polyline_clipped(road_dst, pts, kCasing,
                                               cvRound(st.width) + 3);
                     else
-                        draw_polyline_clipped(g_basemap.img, pts, st.color,
+                        draw_polyline_clipped(road_dst, pts, st.color,
                                               std::max(1, cvRound(st.width)));
                 }
+            }
+            if (blend_roads && !no_roads) {
+                const double a = std::clamp(view.sat_road_opacity, 0.0, 1.0);
+                cv::addWeighted(road_layer, a, g_basemap.img, 1.0 - a, 0.0, g_basemap.img);
             }
 
             if (view.route && view.route->valid) {
@@ -518,7 +747,15 @@ cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int 
             g_basemap.route_fp = fp;
             g_basemap.pan_x    = view.pan_x;
             g_basemap.pan_y    = view.pan_y;
+            g_basemap.satellite     = view.satellite;
+            g_basemap.sat_roads     = view.sat_roads;
+            g_basemap.sat_road_opacity = view.sat_road_opacity;
+            g_basemap.tiles_painted = mosaic.painted;
+            g_basemap.tiles_pending = mosaic.pending;
+            g_basemap.served_at     = view.tiles ? view.tiles->served() : -1;
+            g_basemap.redrawn_at    = now_tick;
         }
+        imagery_drawn = g_basemap.satellite && g_basemap.tiles_painted > 0;
 
         // Blit the window of the buffer this pan is looking at — the whole point
         // of the cache: a drag is a memcpy, not a redraw.
@@ -581,6 +818,22 @@ cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int 
         }
         text(panel, view.heading_up ? "heading up" : "north up",
              cv::Point(width - 96, map_top + 20), 0.38, kTextDim);
+
+        // Whose imagery this is. Every provider requires the credit, and it is
+        // also the fastest way to see which one a run actually used.
+        if (imagery_drawn && view.tiles) {
+            const std::string credit = view.tiles->attribution();
+            int bl = 0;
+            const cv::Size ts = cv::getTextSize(ascii(credit), kFont, 0.34, 1, &bl);
+            text(panel, ascii(credit), cv::Point(width - ts.width - 10, map_bottom - 8),
+                 0.34, kTextDim);
+        } else if (view.satellite && view.tiles) {
+            // Say it plainly rather than leaving a drawn map that looks like the
+            // imagery was never asked for.
+            text(panel, view.tiles->pending() > 0 ? "loading imagery..."
+                                                  : "no imagery - drawn map",
+                 cv::Point(14, map_bottom - 34), 0.38, kWarn);
+        }
     } else {
         // No position, or no map. Never quietly draw a plausible-looking map at
         // some default coordinate — say the position is missing, loudly, because
@@ -702,7 +955,7 @@ cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int 
     // inside the panel it would be a postage stamp.
     if (!view.input_active && view.map_loaded) {
         // Top-left, clear of the scale bar that lives in the bottom-left.
-        text(panel, "d  destination      wheel / + -  zoom      t  light/dark",
+        text(panel, "click  set destination      d  search      wheel  zoom      t  light/dark",
              cv::Point(12, map_top + 20), 0.36, kTextDim);
         if (view.panned)
             text(panel, "r  recentre", cv::Point(12, map_top + 40), 0.4, kWarn);

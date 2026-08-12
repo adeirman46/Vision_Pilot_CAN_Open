@@ -238,6 +238,28 @@ Config load_vision_pilot_config()
         nav.heading_up  = parse_bool(optional(kv, "nav.heading_up", "true"),
                                      "nav.heading_up");
         nav.dark        = parse_bool(optional(kv, "nav.dark", "true"), "nav.dark");
+
+        nav.satellite   = parse_bool(optional(kv, "nav.satellite", "false"),
+                                     "nav.satellite");
+        nav.tile_url    = optional(kv, "nav.tile_url", nav.tile_url);
+        nav.tile_cache_dir  = expand_home(optional(kv, "nav.tile_cache_dir",
+                                                   nav.tile_cache_dir));
+        nav.tile_attribution = optional(kv, "nav.tile_attribution",
+                                        nav.tile_attribution);
+        nav.tile_max_zoom = parse_int(optional(kv, "nav.tile_max_zoom", "19"),
+                                      "nav.tile_max_zoom");
+        nav.tile_offline  = parse_bool(optional(kv, "nav.tile_offline", "false"),
+                                       "nav.tile_offline");
+        nav.sat_roads     = navigation::parse_road_overlay(
+            optional(kv, "nav.satellite_roads", "all"));
+        nav.sat_road_opacity = parse_double(
+            optional(kv, "nav.satellite_roads_opacity", "0.85"),
+            "nav.satellite_roads_opacity");
+        if (nav.sat_road_opacity < 0.0 || nav.sat_road_opacity > 1.0)
+            throw std::runtime_error("nav.satellite_roads_opacity must be 0.0 to 1.0");
+        if (nav.tile_max_zoom < 1 || nav.tile_max_zoom > 22)
+            throw std::runtime_error("nav.tile_max_zoom must be between 1 and 22");
+
         if (nav.panel_width < 160)
             throw std::runtime_error("nav.panel_width must be at least 160 px");
         if (nav.zoom_m < 50.0)

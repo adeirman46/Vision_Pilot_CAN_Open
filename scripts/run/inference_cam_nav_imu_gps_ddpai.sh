@@ -512,6 +512,9 @@ set_conf nav.zoom_m      "$ZOOM"        "$MAIN_CONF"
 set_conf nav.panel_width "$PANEL"       "$MAIN_CONF"
 set_conf nav.heading_up  "$HEADING_UP"  "$MAIN_CONF"
 set_conf nav.dark        "$DARK"        "$MAIN_CONF"
+# Drawn map, not the satellite one inference_cam_nav_mp.sh switches on. Written
+# every run so switching between the two scripts never inherits the other's panel.
+set_conf nav.satellite   "false"        "$MAIN_CONF"
 set_conf nav.output_size "$OUTPUT_SIZE" "$MAIN_CONF"
 set_conf nav.destination      "$DEST"      "$MAIN_CONF"
 set_conf nav.destination_name "$DEST_NAME" "$MAIN_CONF"

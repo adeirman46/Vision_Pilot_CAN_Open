@@ -24,6 +24,10 @@ public:
         bool left_down = false;
         int  wheel = 0;        // notches since the last read, +up / -down
         bool inside = false;
+        // Left-clicks completed since the last read — pressed and released
+        // without travelling, so a drag is not one. Where they were released is
+        // (x, y), which for a click is also where they were pressed.
+        int  clicks = 0;
     };
     virtual MouseState mouse() { return {}; }
 };

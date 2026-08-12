@@ -104,13 +104,26 @@ void MapView::mousePressEvent(QMouseEvent* e)
 {
     if (e->button() != Qt::LeftButton) return;
     dragging_ = true;
+    moved_ = false;
+    // A press that arrives while the window is not the active one is the press
+    // that brought it to the front. It still pans, because that is harmless, but
+    // it must not set a destination: clicking a background window to focus it is
+    // not a driver saying "take me there", and this also swallows the stray
+    // button events a compositor can deliver when it maps or activates a window
+    // under the pointer.
+    focus_click_ = !isActiveWindow();
     drag_last_ = e->pos();
+    press_at_ = e->pos();
     setCursor(Qt::ClosedHandCursor);
 }
 
 void MapView::mouseMoveEvent(QMouseEvent* e)
 {
     if (!dragging_ || !nav_) return;
+    // A few pixels of travel is a hand that did not quite hold still, not a
+    // drag. Past that the gesture has committed to moving the map and the
+    // release is no longer a click.
+    if ((e->pos() - press_at_).manhattanLength() > 6) moved_ = true;
     const QPoint d = e->pos() - drag_last_;
     drag_last_ = e->pos();
     // Repaint immediately rather than waiting for the next timer tick: the map
@@ -123,10 +136,13 @@ void MapView::mouseMoveEvent(QMouseEvent* e)
     emit panned();
 }
 
-void MapView::mouseReleaseEvent(QMouseEvent*)
+void MapView::mouseReleaseEvent(QMouseEvent* e)
 {
+    const bool was_click = dragging_ && !moved_ && !focus_click_ &&
+                           e->button() == Qt::LeftButton;
     dragging_ = false;
     setCursor(Qt::OpenHandCursor);
+    if (was_click) emit clicked(press_at_);
 }
 
 void MapView::wheelEvent(QWheelEvent* e)
@@ -178,6 +194,10 @@ MainWindow::MainWindow(Config cfg, bool debug_viz, QWidget* parent)
     theme_btn_ = new QPushButton(QStringLiteral("Light"), map_);
     theme_btn_->setToolTip(QStringLiteral("Switch between the light and dark map"));
     head_btn_  = new QPushButton(QStringLiteral("North up"), map_);
+    sat_btn_   = new QPushButton(QStringLiteral("Satellite"), map_);
+    sat_btn_->setToolTip(QStringLiteral(
+        "Aerial imagery under the map. Tiles are cached on disk, so a road "
+        "driven once needs no network again."));
     clear_btn_ = new QPushButton(QStringLiteral("Clear route"), map_);
     zoom_in_   = new QPushButton(QStringLiteral("+"), map_);
     zoom_out_  = new QPushButton(QStringLiteral("−"), map_);
@@ -190,8 +210,10 @@ MainWindow::MainWindow(Config cfg, bool debug_viz, QWidget* parent)
     connect(search_, &QLineEdit::textEdited, this, &MainWindow::onSearchChanged);
     connect(search_, &QLineEdit::returnPressed, this, &MainWindow::onSearchReturn);
     connect(results_, &QListWidget::itemClicked, this, &MainWindow::onResultChosen);
+    connect(map_, &MapView::clicked, this, &MainWindow::onMapClicked);
     connect(theme_btn_, &QPushButton::clicked, this, &MainWindow::toggleTheme);
     connect(head_btn_, &QPushButton::clicked, this, &MainWindow::toggleHeading);
+    connect(sat_btn_, &QPushButton::clicked, this, &MainWindow::toggleSatellite);
     connect(clear_btn_, &QPushButton::clicked, this, &MainWindow::clearRoute);
     connect(zoom_in_, &QPushButton::clicked, this, [this] {
         nav_->zoom_by(0.8);
@@ -224,6 +246,8 @@ MainWindow::MainWindow(Config cfg, bool debug_viz, QWidget* parent)
     connect(timer_, &QTimer::timeout, this, &MainWindow::tick);
     timer_->start(33);
 
+    sat_btn_->setText(nav_->satellite() ? QStringLiteral("Map")
+                                        : QStringLiteral("Satellite"));
     applyTheme();
     resize(1600, 900);
 }
@@ -257,6 +281,14 @@ void MainWindow::toggleHeading()
     nav_->set_heading_up(!nav_->heading_up());
     head_btn_->setText(nav_->heading_up() ? QStringLiteral("North up")
                                           : QStringLiteral("Heading up"));
+    map_->refresh();
+}
+
+void MainWindow::toggleSatellite()
+{
+    nav_->set_satellite(!nav_->satellite());
+    sat_btn_->setText(nav_->satellite() ? QStringLiteral("Map")
+                                        : QStringLiteral("Satellite"));
     map_->refresh();
 }
 
@@ -370,6 +402,25 @@ void MainWindow::onSearchReturn()
     }
 }
 
+void MainWindow::onMapClicked(QPoint pos)
+{
+    // The pointer arrives in logical pixels; the panel was rendered in real
+    // screen ones, and the projection that has to be inverted is in those.
+    const qreal dpr = map_->devicePixelRatioF();
+    if (!nav_->set_destination_at_panel_px(pos.x() * dpr, pos.y() * dpr)) {
+        status_->setText(QStringLiteral(
+            "Tap on the map itself to set a destination"));
+        return;
+    }
+
+    // Reflect it in the search field, so the two ways of choosing a destination
+    // leave the window in the same state.
+    search_->setText(QString::fromStdString(nav_->destination_name()));
+    results_->hide();
+    search_->clearFocus();
+    map_->refresh();
+}
+
 void MainWindow::tick()
 {
     nav_->update();
@@ -421,19 +472,25 @@ void MainWindow::positionOverlay()
     // Controls sit above the panel's own footer strip — the road name and route
     // summary are painted into the map image, and covering them would be worse
     // than having the buttons a little higher.
+    //
+    // Two rows on the left rather than one: the panel narrows to 380 px on a
+    // small window, and four buttons in a line would run under the recentre
+    // button on the right.
     constexpr int kFooter = 84;
-    const int by = h - kFooter - 44;
-    const int bw = 104, bh = 34, gap = 8;
+    const int bh = 34, gap = 8;
+    const int by = h - kFooter - 44;            // lower row
+    const int by_top = by - (bh + gap);         // upper row
 
-    theme_btn_->setGeometry(pad, by, bw, bh);
-    head_btn_->setGeometry(pad + bw + gap, by, 96, bh);
-    clear_btn_->setGeometry(pad + bw + gap + 96 + gap, by, 104, bh);
+    sat_btn_->setGeometry(pad, by_top, 104, bh);
+    head_btn_->setGeometry(pad + 104 + gap, by_top, 96, bh);
+    theme_btn_->setGeometry(pad, by, 104, bh);
+    clear_btn_->setGeometry(pad + 104 + gap, by, 104, bh);
 
     zoom_in_->setGeometry(w - pad - 40, by - 2 * (bh + gap), 40, bh);
     zoom_out_->setGeometry(w - pad - 40, by - (bh + gap), 40, bh);
     recenter_->setGeometry(w - pad - 96, by, 96, bh);
 
-    const QList<QWidget*> controls{theme_btn_, head_btn_, clear_btn_,
+    const QList<QWidget*> controls{theme_btn_, head_btn_, sat_btn_, clear_btn_,
                                    zoom_in_, zoom_out_, recenter_};
     for (QWidget* b : controls) b->raise();
 }

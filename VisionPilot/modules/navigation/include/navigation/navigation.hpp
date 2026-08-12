@@ -14,6 +14,7 @@
 #include <navigation/nav_config.hpp>
 #include <navigation/osm_map.hpp>
 #include <navigation/router.hpp>
+#include <navigation/tile_source.hpp>
 
 namespace navigation {
 
@@ -48,6 +49,20 @@ public:
     // route until the new one lands.
     void set_destination(double lat, double lon, const std::string& name = "");
     void clear_destination();
+
+    // ── Tap the map to go there ──────────────────────────────────────────────
+    // A destination the driver can see but cannot name — a junction, a gate, the
+    // far corner of a complex — is the normal case, and typing a street name is
+    // a poor substitute for pointing at it. `px`,`py` are pixels inside the
+    // panel as it was last rendered. Returns false when the point was not on the
+    // map (the banner, the footer, or before the first panel was drawn).
+    bool set_destination_at_panel_px(double px, double py);
+    // The same, in the composed frame's coordinates — for the OpenCV front-end,
+    // which has one window and no widget to measure against.
+    bool set_destination_at_canvas_px(int x, int y);
+    // The same conversion on its own, for a front-end that wants the coordinate
+    // without committing to a route.
+    bool panel_px_to_lat_lon(double px, double py, double& lat, double& lon) const;
 
     // ── Destination box ──────────────────────────────────────────────────────
     // Typed straight into the video window: the app has no other UI, and a
@@ -96,6 +111,11 @@ public:
     void   set_top_inset(int px) { top_inset_ = px; }
     void   set_dark(bool d) { cfg_.dark = d; }
     bool   dark() const { return cfg_.dark; }
+    // Aerial imagery under the map. Turning it on with no tile source built
+    // (nav.satellite was off at startup) builds one on the spot, so the toggle
+    // works whether or not the run began in satellite mode.
+    void   set_satellite(bool s);
+    bool   satellite() const { return cfg_.satellite; }
     void   set_heading_up(bool h) { cfg_.heading_up = h; }
     bool   heading_up() const { return cfg_.heading_up; }
     void   zoom_by(double factor)
@@ -124,6 +144,12 @@ private:
     Config                        cfg_;
     OsmMap                        map_;
     std::unique_ptr<GpsInterface> gps_;
+    std::unique_ptr<TileSource>   tiles_;
+
+    void ensure_tiles();
+    // The transform the last panel() used, so a click can be inverted through
+    // exactly it rather than through a guess at what it was.
+    PanelProjection proj_;
 
     bool        ready_ = false;
     std::string error_;
@@ -168,6 +194,10 @@ private:
     int      drag_last_x_ = 0, drag_last_y_ = 0;
     uint64_t last_pan_ms_ = 0;
     cv::Rect panel_rect_;
+    // The size the panel was rendered at, which is not always the size it was
+    // pasted in at: compose() resizes it to fit a fixed canvas. A click in the
+    // window has to be scaled by the ratio before it means anything.
+    cv::Size panel_render_size_;
     int      top_inset_ = 0;
 };
 

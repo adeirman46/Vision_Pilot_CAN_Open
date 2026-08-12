@@ -224,6 +224,10 @@ int main(int argc, char** argv)
             // is a discrete action, so it does not suffer the same way.
             const auto m = visualization.mouse();
             navigator.handle_mouse(m.x, m.y, false, m.wheel);
+            // A click on the map is "go there" — the destination a driver can
+            // point at but cannot name is the normal one, and typing a street
+            // into a box while moving is not an option.
+            if (m.clicks > 0) navigator.set_destination_at_canvas_px(m.x, m.y);
 
         }
     }

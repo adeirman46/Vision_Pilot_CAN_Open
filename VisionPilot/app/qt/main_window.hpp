@@ -32,6 +32,11 @@ public:
 
 signals:
     void panned();
+    // A press and release in the same place, in the map's own pixels. Separate
+    // from a drag on purpose: the same button both moves the map and picks a
+    // destination, and letting go after shoving the map across must not be read
+    // as "take me there".
+    void clicked(QPoint pos);
     // The children floating on the map belong to the window, but only the map
     // knows when its own size settled. Laying them out on the window's resize
     // used a size the map did not have yet, which is what threw the buttons off
@@ -50,7 +55,10 @@ private:
     navigation::Navigator* nav_;
     QImage                 image_;
     QPoint                 drag_last_;
+    QPoint                 press_at_;
     bool                   dragging_ = false;
+    bool                   moved_    = false;   // travelled far enough to be a drag
+    bool                   focus_click_ = false;   // the press that raised the window
 };
 
 // The window. Camera view on the left, map on the right, a search bar across
@@ -69,8 +77,10 @@ private slots:
     void onSearchChanged(const QString& text);
     void onResultChosen(QListWidgetItem* item);
     void onSearchReturn();
+    void onMapClicked(QPoint pos);
     void toggleTheme();
     void toggleHeading();
+    void toggleSatellite();
     void clearRoute();
     void tick();
 
@@ -89,6 +99,7 @@ private:
     QListWidget* results_   = nullptr;
     QPushButton* theme_btn_ = nullptr;
     QPushButton* head_btn_  = nullptr;
+    QPushButton* sat_btn_   = nullptr;
     QPushButton* clear_btn_ = nullptr;
     QPushButton* zoom_in_   = nullptr;
     QPushButton* zoom_out_  = nullptr;
