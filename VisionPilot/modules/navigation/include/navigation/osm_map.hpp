@@ -15,6 +15,20 @@ constexpr double kEarthR = 6371000.0;   // m
 void lat_lon_to_en(double lat, double lon, double ref_lat, double ref_lon,
                    double& east_m, double& north_m);
 double haversine_m(double lat1, double lon1, double lat2, double lon2);
+
+// East/north offsets → the ego's own frame: x forward, y left, in metres — the
+// frame the vision path lives in.
+//
+// heading_deg is a compass bearing: 0 = north, growing clockwise. So in the
+// east/north plane the ego's forward is (sin h, cos h) and its left is
+// (-cos h, sin h), and this is those two dot products.
+//
+// It is a handful of arithmetic and it is a named function anyway, because a
+// sign error here mirrors the whole map about the car's axis: the route corridor
+// would land on the wrong arm of every junction, reject exactly the waypoints it
+// should keep, and look entirely plausible doing it.
+void en_to_ego(double east_m, double north_m, double heading_deg,
+               double& x_forward_m, double& y_left_m);
 double bearing_deg(double lat1, double lon1, double lat2, double lon2);
 
 // ─── Road classes (mirrors osm_to_vpmap.py) ──────────────────────────────────

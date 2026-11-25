@@ -31,6 +31,18 @@ struct Config {
     std::string precision_as  = "";
     std::string precision_asp = "";
 
+    // ── Route corridor ────────────────────────────────────────────────────────
+    // Forwarded to LateralFusion::Config. See there for what they mean; they
+    // live here because this is the struct the .conf parser fills.
+    float route_corridor_m = 3.0f;
+    int   route_min_pts    = 8;
+    bool  route_fuse       = true;
+    float route_authority  = 0.7f;
+    float route_bend_min_deg = 12.f;
+    float route_bend_max_deg = 50.f;
+    float route_arm_m        = 45.f;
+    float route_engage_m     = 18.f;
+
     std::string precision_autodrive() const { return precision_ad.empty()  ? precision : precision_ad; }
     std::string precision_autosteer() const { return precision_as.empty()  ? precision : precision_as; }
     std::string precision_autospeed() const { return precision_asp.empty() ? precision : precision_asp; }
@@ -78,6 +90,16 @@ public:
     //   C        : raw-camera → warped-BEV homography (from ImagePreprocessor)
     //   raw_size : original frame dimensions before top-crop + resize
     void set_H_resized(const cv::Mat& H, cv::Size raw_size);
+
+    // ── The route the vision path is asked to follow ──────────────────────────
+    // Ego-frame route waypoints (x forward, y left, metres) from
+    // Navigator::route_ahead_ego(). Call before process(), every frame. An empty
+    // vector turns the corridor off, which is what happens by itself whenever
+    // there is no fix, no route or no heading — so the caller can pass the
+    // navigator's answer through without testing it first.
+    void set_route_ego(const std::vector<cv::Point2f>& route_ego);
+    // The next turn the route asks for, from Navigator::next_maneuver().
+    void set_maneuver(bool valid, float dist_m, float bend_deg);
 
     // H that maps resized-image pixel → world (set after set_H_resized()).
     // Empty until set_H_resized() is called.

@@ -32,6 +32,13 @@ struct Step {
     std::string road;                 // the road being *entered*
 };
 
+// One point of a mission, in visiting order. A single destination is a mission
+// of length one, so this is the only representation of "where to" there is.
+struct Waypoint {
+    double      lat = 0.0, lon = 0.0;
+    std::string name;
+};
+
 struct Route {
     bool                  valid = false;
     std::vector<uint32_t> nodes;              // full geometry, start → destination

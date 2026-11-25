@@ -51,6 +51,8 @@ int main(int argc, char** argv)
         else if (arg == "--no-window") show_window = false;
         else if (arg == "--nav") cfg.navigation.enabled = true;
         else if (arg == "--no-nav") cfg.navigation.enabled = false;
+        else if (arg == "--guidance") cfg.guidance.enabled = true;
+        else if (arg == "--no-guidance") cfg.guidance.enabled = false;
     }
 
     std::shared_ptr<CameraInterface> camera_interface;
@@ -115,6 +117,30 @@ int main(int argc, char** argv)
             VP_WARN("[Nav] enabled but degraded: %s", navigator.error().c_str());
     }
 
+    // ── Route corridor ────────────────────────────────────────────────────────
+    // The route filtering the vision waypoints. It needs a route to filter
+    // against, so with no destination set it stays inert and the path fit
+    // behaves exactly as it always has.
+    if (cfg.guidance.enabled)
+    {
+        if (!cfg.navigation.enabled)
+        {
+            VP_WARN("[Guidance] asked for, but nav is off — no route to follow. Disabled.");
+            cfg.guidance.enabled = false;
+        }
+        else
+        {
+            VP_INFO("[Guidance] route corridor on — %.1f m wide, %.0f m lookahead, "
+                    "%d waypoints minimum",
+                    static_cast<double>(cfg.inference.route_corridor_m) * 2.0,
+                    cfg.guidance.lookahead_m,
+                    cfg.inference.route_min_pts);
+            if (!cfg.navigation.has_destination)
+                VP_WARN("[Guidance] no destination set — the corridor stays off "
+                        "until one is picked (tap the map, or press 'd')");
+        }
+    }
+
     // ── Initialize display ────────────────────────────────────────────────────
     visualization::Visualization visualization({cfg.webrtc_on, cfg.webrtc_port, show_window});
 
@@ -154,6 +180,20 @@ int main(int argc, char** argv)
         // ── Default frame no inference ────────────────────────────────────────────
         cv::Mat display_frame = resized;
 
+        // ── Navigation ────────────────────────────────────────────────────────
+        // Ahead of inference, not after it. The route corridor filters the very
+        // waypoints this frame's path fit is about to be built from, so it has
+        // to be drawn around this frame's position rather than the last one's.
+        // The panel below is redrawn from the same update, so nothing is done
+        // twice.
+        navigator.update();
+        if (cfg.guidance.enabled) {
+            pipeline.set_route_ego(navigator.route_ahead_ego(cfg.guidance.lookahead_m));
+            const auto turn = navigator.next_maneuver();
+            pipeline.set_maneuver(turn.valid, static_cast<float>(turn.dist_m),
+                                  static_cast<float>(turn.bend_deg));
+        }
+
         if (const auto r = pipeline.process(warped, resized))
         {
             pipeline.latency().print();
@@ -186,6 +226,19 @@ int main(int argc, char** argv)
                 cipo_dist,
                 r->cipo.velocity_ms);
 
+            // The corridor's own line, so it can be judged from a console with
+            // no window attached — which is how a headless drive gets reviewed.
+            if (r->lateral.route_active || r->lateral.route_weight > 0.f)
+                VP_INFO("route: turn %+.0f deg in %.0f m  map=%.0f%%  "
+                        "kappa_route=%+.4f  kappa_out=%+.4f  |  corridor %d/%d kept%s",
+                        static_cast<double>(r->lateral.route_bend_deg),
+                        static_cast<double>(r->lateral.route_dist_m),
+                        static_cast<double>(r->lateral.route_weight) * 100.0,
+                        static_cast<double>(r->lateral.route_kappa),
+                        static_cast<double>(r->lateral.curvature),
+                        r->lateral.route_pts_kept, r->lateral.route_pts_in,
+                        r->lateral.route_fallback ? "  (corridor stood down)" : "");
+
             vehicle_interface->write(
                 plan.steering.empty() ? 0.0 : plan.steering[1],
                 plan.acceleration);
@@ -213,7 +266,6 @@ int main(int argc, char** argv)
         {
             // Map to the right of the inference view — one composed frame, so the
             // local window and the WebRTC stream both carry it.
-            navigator.update();
             visualization.render_frame(navigator.compose(display_frame));
             // Keys typed into the video window drive the destination box —
             // press 'd' to open it, Esc to close, 'c' to clear the route.
@@ -227,7 +279,13 @@ int main(int argc, char** argv)
             // A click on the map is "go there" — the destination a driver can
             // point at but cannot name is the normal one, and typing a street
             // into a box while moving is not an option.
-            if (m.clicks > 0) navigator.set_destination_at_canvas_px(m.x, m.y);
+            // Shift-click appends to the mission, a plain click retargets —
+            // the same gesture the Qt window uses, so the two front-ends do not
+            // have to be learned separately.
+            if (m.clicks > 0) {
+                if (m.shift_click) navigator.add_waypoint_at_canvas_px(m.x, m.y);
+                else               navigator.set_destination_at_canvas_px(m.x, m.y);
+            }
 
         }
     }

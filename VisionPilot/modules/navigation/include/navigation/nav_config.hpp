@@ -2,6 +2,8 @@
 #define VISIONPILOT_NAV_CONFIG_HPP
 
 #include <string>
+#include <utility>
+#include <vector>
 
 // Kept free of OpenCV and of the rest of the navigation module so the config
 // module can parse vision_pilot.conf into it without pulling in the renderer.
@@ -55,6 +57,13 @@ struct Config {
     // Draw the unfiltered receiver alongside the fused position, so the two can
     // be judged against each other on a real drive.
     bool        compare_gps = false;
+
+    // ── Mission (empty → the destination alone) ──────────────────────────────
+    // Points to visit in order, before the destination. Kept as bare
+    // coordinates rather than a Waypoint list so this header stays free of the
+    // rest of the module — Navigator names them off the map at startup, which
+    // gives the same names a tap on the panel would.
+    std::vector<std::pair<double, double>> waypoints;
 
     // ── Destination (empty → free-drive map, no route) ───────────────────────
     bool        has_destination = false;

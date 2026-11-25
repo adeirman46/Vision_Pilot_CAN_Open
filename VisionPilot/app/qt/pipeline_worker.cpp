@@ -114,6 +114,21 @@ void PipelineWorker::run()
         cv::Mat display = resized;
         double ego_v = 0.0;
 
+        // ── Route corridor ────────────────────────────────────────────────────
+        // Handed over by the GUI thread's nav tick. Empty whenever there is no
+        // route, no fix or no heading, which is exactly when the corridor should
+        // be off — so it is passed straight through without being tested here.
+        if (cfg_.guidance.enabled) {
+            std::vector<cv::Point2f> route;
+            {
+                std::lock_guard<std::mutex> lock(route_mtx_);
+                route = route_ego_;
+            }
+            pipeline.set_route_ego(route);
+            pipeline.set_maneuver(man_valid_.load(), man_dist_m_.load(),
+                                  man_bend_deg_.load());
+        }
+
         if (const auto r = pipeline.process(warped, resized)) {
             ego_v = vehicle->read();
 
@@ -153,6 +168,12 @@ void PipelineWorker::run()
     }
 
     emit finished();
+}
+
+void PipelineWorker::set_route_ego(const std::vector<cv::Point2f>& route)
+{
+    std::lock_guard<std::mutex> lock(route_mtx_);
+    route_ego_ = route;
 }
 
 }  // namespace visionpilot::ui

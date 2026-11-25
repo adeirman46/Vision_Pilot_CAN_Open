@@ -58,11 +58,21 @@ Navigator::Navigator(const Config& cfg) : cfg_(cfg)
 
     if (cfg_.satellite) ensure_tiles();
 
-    if (cfg_.has_destination) {
-        dest_lat_   = cfg_.dest_lat;
-        dest_lon_   = cfg_.dest_lon;
-        dest_name_  = cfg_.dest_name;
+    // Via points first, destination last: "--via A --via B --dest C" reads as
+    // A, B, C and is planned as A, B, C.
+    for (const auto& [wlat, wlon] : cfg_.waypoints)
+        mission_.push_back({wlat, wlon, name_at(wlat, wlon)});
+    if (cfg_.has_destination)
+        mission_.push_back({cfg_.dest_lat, cfg_.dest_lon,
+                            cfg_.dest_name.empty() ? name_at(cfg_.dest_lat, cfg_.dest_lon)
+                                                   : cfg_.dest_name});
+
+    if (!mission_.empty()) {
+        dest_name_  = mission_.back().name;
         want_route_ = true;
+        if (mission_.size() > 1)
+            VP_INFO("[Nav] mission of %zu waypoints from the config",
+                    mission_.size());
     } else if (map_.loaded()) {
         // Started with nowhere to go: open the destination box straight away.
         // A head unit asks "where to?" when you get in — it does not wait to be
@@ -103,24 +113,58 @@ bool Navigator::panel_px_to_lat_lon(double px, double py, double& lat, double& l
     return navigation::panel_px_to_lat_lon(proj_, px, py, lat, lon);
 }
 
-bool Navigator::set_destination_at_panel_px(double px, double py)
+// Name a point after the road it landed on. The router snaps the point to the
+// network itself, so the coordinate stays exactly where it was put — the pin
+// marks the place that was pointed at, not the nearest thing the map happens to
+// know a name for. A coordinate is the fallback, because an unnamed pin on a
+// banner is worse than a pair of numbers.
+std::string Navigator::name_at(double lat, double lon) const
 {
-    double lat = 0.0, lon = 0.0;
-    if (!panel_px_to_lat_lon(px, py, lat, lon)) return false;
-    if (!map_.loaded()) return false;
-
-    // Name the pin after the road it landed on. The router snaps the
-    // destination to the network itself, so the coordinate stays exactly where
-    // the finger went — the pin marks the place that was pointed at, not the
-    // nearest thing the map happens to know a name for.
     std::string name;
-    const MapMatch m = map_.match(lat, lon, 250.0);
-    if (m.valid) name = map_.way_name(map_.ways()[m.way]);
+    if (map_.loaded()) {
+        const MapMatch m = map_.match(lat, lon, 250.0);
+        if (m.valid) name = map_.way_name(map_.ways()[m.way]);
+    }
     if (name.empty()) {
         char buf[48];
         std::snprintf(buf, sizeof(buf), "%.5f, %.5f", lat, lon);
         name = buf;
     }
+    return name;
+}
+
+// A tap on the panel, turned into a named point. Shared by "go here" and "go
+// here next" so the two can never disagree about where the finger landed.
+bool Navigator::tap_to_point(double px, double py,
+                             double& lat, double& lon, std::string& name) const
+{
+    if (!panel_px_to_lat_lon(px, py, lat, lon)) return false;
+    if (!map_.loaded()) return false;
+    name = name_at(lat, lon);
+    return true;
+}
+
+// Panel pixels → composed-frame pixels. The panel is rendered at one size and
+// pasted at another, so a click in the window has to be scaled before it means
+// anything.
+bool Navigator::canvas_px_to_panel_px(int x, int y, double& px, double& py) const
+{
+    if (panel_rect_.width <= 0 || panel_rect_.height <= 0) return false;
+    if (!panel_rect_.contains(cv::Point(x, y))) return false;
+    if (panel_render_size_.width <= 0 || panel_render_size_.height <= 0) return false;
+
+    px = (x - panel_rect_.x)
+       * (static_cast<double>(panel_render_size_.width) / panel_rect_.width);
+    py = (y - panel_rect_.y)
+       * (static_cast<double>(panel_render_size_.height) / panel_rect_.height);
+    return true;
+}
+
+bool Navigator::set_destination_at_panel_px(double px, double py)
+{
+    double lat = 0.0, lon = 0.0;
+    std::string name;
+    if (!tap_to_point(px, py, lat, lon, name)) return false;
 
     VP_INFO("[Nav] destination tapped on the map: %.6f, %.6f (%s)", lat, lon,
             name.c_str());
@@ -128,31 +172,70 @@ bool Navigator::set_destination_at_panel_px(double px, double py)
     return true;
 }
 
+bool Navigator::add_waypoint_at_panel_px(double px, double py)
+{
+    double lat = 0.0, lon = 0.0;
+    std::string name;
+    if (!tap_to_point(px, py, lat, lon, name)) return false;
+
+    VP_INFO("[Nav] waypoint %zu tapped on the map: %.6f, %.6f (%s)",
+            mission_.size() + 1, lat, lon, name.c_str());
+    add_waypoint(lat, lon, name);
+    return true;
+}
+
 bool Navigator::set_destination_at_canvas_px(int x, int y)
 {
-    if (panel_rect_.width <= 0 || panel_rect_.height <= 0) return false;
-    if (!panel_rect_.contains(cv::Point(x, y))) return false;
-    if (panel_render_size_.width <= 0 || panel_render_size_.height <= 0) return false;
+    double px = 0.0, py = 0.0;
+    if (!canvas_px_to_panel_px(x, y, px, py)) return false;
+    return set_destination_at_panel_px(px, py);
+}
 
-    const double sx = static_cast<double>(panel_render_size_.width) / panel_rect_.width;
-    const double sy = static_cast<double>(panel_render_size_.height) / panel_rect_.height;
-    return set_destination_at_panel_px((x - panel_rect_.x) * sx,
-                                       (y - panel_rect_.y) * sy);
+bool Navigator::add_waypoint_at_canvas_px(int x, int y)
+{
+    double px = 0.0, py = 0.0;
+    if (!canvas_px_to_panel_px(x, y, px, py)) return false;
+    return add_waypoint_at_panel_px(px, py);
 }
 
 void Navigator::set_destination(double lat, double lon, const std::string& name)
 {
-    dest_lat_   = lat;
-    dest_lon_   = lon;
+    // "Go here", not "go here next": a destination replaces the mission rather
+    // than extending it. Appending is add_waypoint().
+    mission_    = {{lat, lon, name}};
     dest_name_  = name;
     want_route_ = true;
     last_route_ms_ = 0;   // route now, do not wait out the cooldown
     request_route();
 }
 
+void Navigator::add_waypoint(double lat, double lon, const std::string& name)
+{
+    mission_.push_back({lat, lon, name});
+    dest_name_  = name;              // the last point is the destination
+    want_route_ = true;
+    last_route_ms_ = 0;
+    request_route();
+}
+
+void Navigator::pop_waypoint()
+{
+    if (mission_.empty()) return;
+    mission_.pop_back();
+    if (mission_.empty()) {
+        clear_destination();
+        return;
+    }
+    dest_name_ = mission_.back().name;
+    last_route_ms_ = 0;
+    request_route();
+}
+
 void Navigator::clear_destination()
 {
     want_route_ = false;
+    mission_.clear();
+    dest_name_.clear();
     std::lock_guard<std::mutex> lock(route_mtx_);
     route_.clear();
 }
@@ -172,24 +255,261 @@ void Navigator::request_route()
     const GpsFix f = *fix_;
     worker_ = std::thread(&Navigator::route_worker, this,
                           f.latitude, f.longitude, f.bearing_deg, f.has_bearing,
-                          dest_lat_, dest_lon_, dest_name_);
+                          mission_);
 }
 
+// Route every leg of the mission and stitch them into one Route.
+//
+// Stitching rather than teaching the router about via-points is deliberate:
+// everything downstream — the progress tracker, the manoeuvre banner, the
+// corridor that filters the vision waypoints — reads a Route and none of it has
+// to learn that a mission exists. A single destination is a one-leg mission, so
+// there is one path through this code and not two.
 void Navigator::route_worker(double from_lat, double from_lon, double heading,
-                             bool have_heading, double to_lat, double to_lon,
-                             std::string dest_name)
+                             bool have_heading, std::vector<Waypoint> mission)
 {
-    Route r = compute_route(map_, from_lat, from_lon, to_lat, to_lon,
-                            have_heading ? &heading : nullptr);
-    r.dest_name = std::move(dest_name);
+    Route out;
+
+    double lat = from_lat, lon = from_lon;
+    double leg_heading      = heading;
+    bool   have_leg_heading = have_heading;
+
+    for (size_t i = 0; i < mission.size() && !shutdown_; ++i) {
+        const Route leg = compute_route(map_, lat, lon, mission[i].lat, mission[i].lon,
+                                        have_leg_heading ? &leg_heading : nullptr);
+        // One unroutable leg makes the whole mission unroutable. Half a mission
+        // is worse than none: it would draw a line to somewhere the driver did
+        // not ask to go and call it the route.
+        if (!leg.valid || leg.nodes.size() < 2) { out.clear(); break; }
+
+        // The first node of every leg after the first is the last node of the
+        // one before it. Appending it again would put a zero-length segment in
+        // the geometry and a duplicate distance in the cumulative table.
+        const size_t skip   = out.nodes.empty() ? 0 : 1;
+        const double offset = out.length_m;
+
+        for (size_t j = skip; j < leg.nodes.size(); ++j) {
+            out.nodes.push_back(leg.nodes[j]);
+            out.cumulative_m.push_back(offset + leg.cumulative_m[j]);
+        }
+        for (const Step& st : leg.steps) {
+            // Drop the arrival at an intermediate waypoint and the departure
+            // from it: mid-mission they are not manoeuvres, and "Arrive"
+            // announced four waypoints early is worse than saying nothing.
+            const bool intermediate = (i + 1 < mission.size());
+            if (intermediate && st.type == Maneuver::Arrive) continue;
+            if (i > 0 && st.type == Maneuver::Depart) continue;
+            Step s2 = st;
+            s2.distance_from_start_m += offset;
+            out.steps.push_back(s2);
+        }
+        out.length_m   += leg.length_m;
+        out.duration_s += leg.duration_s;
+
+        // Only the first leg gets a heading. It is tempting to carry the arrival
+        // heading into the next leg to stop it turning round on the spot, but
+        // compute_route's heading does not constrain travel at all — it only
+        // biases which way the start point snaps to. Feeding it an arrival
+        // heading therefore cannot prevent a U-turn, and it can snap a waypoint
+        // onto a parallel road that happens to point the right way, which sends
+        // the leg kilometres out of its way to somewhere the driver never
+        // pointed at.
+        have_leg_heading = false;
+        lat = mission[i].lat;
+        lon = mission[i].lon;
+        out.valid = true;
+    }
+
+    if (out.valid && !mission.empty()) {
+        out.dest_lat  = mission.back().lat;
+        out.dest_lon  = mission.back().lon;
+        out.dest_name = mission.back().name;
+        VP_INFO("[Nav] mission: %zu waypoint%s, %.1f km, %.0f min, %zu steps",
+                mission.size(), mission.size() == 1 ? "" : "s",
+                out.length_m / 1000.0, out.duration_s / 60.0, out.steps.size());
+    }
 
     if (!shutdown_) {
         std::lock_guard<std::mutex> lock(route_mtx_);
         // Keep the previous route when the new one failed — a momentary bad fix
         // should not wipe the guidance off the panel.
-        if (r.valid || !route_.valid) route_ = std::move(r);
+        if (out.valid || !route_.valid) route_ = std::move(out);
     }
     routing_ = false;
+}
+
+// ── The route, in the frame the vision path lives in ────────────────────────
+// One conversion, and it is the only thing standing between "the map knows the
+// turn is left" and "the path fit knows it too".
+//
+// The ego-frame conversion itself is en_to_ego(), in osm_map.cpp, so the sign
+// convention has one home and one test.
+//
+// ── Where the heading comes from ────────────────────────────────────────────
+// The receiver, when it reports one. phyphox stops reporting a bearing below
+// 1.5 m/s and derive_motion() then holds the last real one, so a car crawling
+// through a junction — which is the only place any of this matters — keeps the
+// heading it had a second ago.
+//
+// Before the car has ever moved there is no such heading to hold, and the
+// route's own first leg is used instead: the direction from here to the point
+// 25 m along it. That is an assumption — that the car is pointing the way the
+// route goes — and it is stated here rather than hidden, because it is only
+// true of a car that is on its route and facing forwards. It is true whenever
+// this feature is doing anything, and when it is false the car is parked.
+//
+// What is deliberately NOT used is the direction of the matched way. A way's
+// node order is whichever way the mapper happened to draw it and carries no
+// sense of travel at all, so half the time it points backwards — and unlike
+// having no heading, a backwards one is confidently wrong: it puts the entire
+// route behind the car, where the corridor rejects every waypoint there is.
+std::vector<cv::Point2f> Navigator::route_ahead_ego(double lookahead_m) const
+{
+    std::vector<cv::Point2f> out;
+    if (!cfg_.enabled || !fix_ || !map_.loaded() || lookahead_m <= 1.0) return out;
+
+    const double lat0 = fix_->latitude;
+    const double lon0 = fix_->longitude;
+
+    std::lock_guard<std::mutex> lock(route_mtx_);
+    if (!route_.valid || route_.nodes.size() < 2) return out;
+
+    const size_t start =
+        std::min<size_t>(progress_.nearest_index, route_.nodes.size() - 1);
+
+    // ── Heading ──────────────────────────────────────────────────────────────
+    double      heading_deg = 0.0;
+    const char* heading_src = "receiver";
+    if (fix_->has_bearing) {
+        heading_deg = fix_->bearing_deg;
+    } else {
+        // Far enough along that a metre of GPS noise does not swing it, near
+        // enough that it is still this road and not the turn after next.
+        constexpr double kHeadingBaseM = 25.0;
+        size_t j = start;
+        double along = 0.0;
+        for (size_t i = start; i + 1 < route_.nodes.size() && along < kHeadingBaseM; ++i) {
+            along += map_.node_distance_m(route_.nodes[i], route_.nodes[i + 1]);
+            j = i + 1;
+        }
+        if (j == start) return out;   // route ends here; nothing to aim at
+        const Node& n = map_.nodes()[route_.nodes[j]];
+        heading_deg = bearing_deg(lat0, lon0, n.lat(), n.lon());
+        heading_src = "route (never moved)";
+    }
+
+    {
+        static uint64_t last_log = 0;
+        const uint64_t  t = now_ms();
+        if (t - last_log > 3000) {
+            last_log = t;
+            VP_INFO("[Nav] route frame: heading %.0f deg (%s), speed %.1f m/s",
+                    heading_deg, heading_src, fix_->speed_ms);
+        }
+    }
+
+    // Walk the route forward from the node the ego last projected onto, and
+    // convert as we go. Rotating first and resampling second matters: the
+    // spacing that has to be even is the one the waypoints get compared at.
+    std::vector<cv::Point2f> raw;
+    raw.reserve(route_.nodes.size() - start);
+    double walked = 0.0;
+    for (size_t i = start; i < route_.nodes.size(); ++i) {
+        const Node& n = map_.nodes()[route_.nodes[i]];
+        double east = 0.0, north = 0.0, fwd = 0.0, left = 0.0;
+        lat_lon_to_en(n.lat(), n.lon(), lat0, lon0, east, north);
+        en_to_ego(east, north, heading_deg, fwd, left);
+        raw.emplace_back(static_cast<float>(fwd), static_cast<float>(left));
+        if (raw.size() >= 2) {
+            const cv::Point2f& prev = raw[raw.size() - 2];
+            const cv::Point2f& cur  = raw.back();
+            walked += std::hypot(cur.x - prev.x, cur.y - prev.y);
+            // Overshoot the lookahead: the ego sits partway along the first
+            // segment, so stopping exactly at it would come up short.
+            if (walked > lookahead_m + 20.0) break;
+        }
+    }
+    if (raw.size() < 2) return out;
+
+    // Resample at a fixed 1 m of ARC LENGTH, not of forward distance.
+    //
+    // This matters at exactly the place the whole feature exists for. Past a
+    // right-angle turn the route stops going forwards: x plateaus and then
+    // falls while y runs away sideways. Sampling or clipping by x there thins
+    // the corner out, and past 90 degrees drops it entirely — so the one part
+    // of the route that is not straight would be the part least well described.
+    // Arc length is monotonic whatever the road does.
+    constexpr double kStepM = 1.0;
+    double next_s = 0.0, acc = 0.0;
+    bool   started = false;
+    for (size_t i = 0; i + 1 < raw.size() && next_s <= lookahead_m; ++i) {
+        const cv::Point2f a = raw[i], b = raw[i + 1];
+        const double seg = std::hypot(b.x - a.x, b.y - a.y);
+        if (seg < 1e-6) continue;
+        while (next_s <= acc + seg && next_s <= lookahead_m) {
+            const double t = (next_s - acc) / seg;
+            const cv::Point2f p(static_cast<float>(a.x + (b.x - a.x) * t),
+                                static_cast<float>(a.y + (b.y - a.y) * t));
+            next_s += kStepM;
+            // Skip the tail of the route that is still behind the car — the ego
+            // sits partway along its first segment — but only before the first
+            // accepted point. Dropping points from the middle would put a hole
+            // in the arc length the sampling above just made uniform.
+            if (!started) {
+                if (p.x < -2.0f) continue;
+                started = true;
+            }
+            out.push_back(p);
+        }
+        acc += seg;
+    }
+    return out;
+}
+
+// ── The next thing the route asks the car to do ─────────────────────────────
+// Taken from the router's own step list rather than measured off the geometry.
+// The router already decided where the turns are; the only thing left to work
+// out is how sharp this one is, and that is a heading change across the step's
+// node — which is exact whatever the node spacing either side of it happens to
+// be.
+Navigator::NextTurn Navigator::next_maneuver() const
+{
+    NextTurn m;
+    std::lock_guard<std::mutex> lock(route_mtx_);
+    if (!route_.valid || progress_.next_step < 0) return m;
+    if (static_cast<size_t>(progress_.next_step) >= route_.steps.size()) return m;
+
+    const Step& st = route_.steps[progress_.next_step];
+    // Arriving is not a manoeuvre to steer through, and departing has already
+    // happened by definition.
+    if (st.type == Maneuver::Arrive || st.type == Maneuver::Depart) return m;
+
+    // Where the step sits in the node list, so the roads either side of it can
+    // be measured. cumulative_m is parallel to nodes and monotonic, so this is
+    // a lookup rather than a search over geometry.
+    size_t at = 0;
+    double best = 1e18;
+    for (size_t i = 0; i < route_.nodes.size(); ++i) {
+        const double d = std::abs(route_.cumulative_m[i] - st.distance_from_start_m);
+        if (d < best) { best = d; at = i; }
+    }
+    if (at == 0 || at + 1 >= route_.nodes.size()) return m;
+
+    const Node& before = map_.nodes()[route_.nodes[at - 1]];
+    const Node& corner = map_.nodes()[route_.nodes[at]];
+    const Node& after  = map_.nodes()[route_.nodes[at + 1]];
+
+    const double in_deg  = bearing_deg(before.lat(), before.lon(), corner.lat(), corner.lon());
+    const double out_deg = bearing_deg(corner.lat(), corner.lon(), after.lat(),  after.lon());
+    // Shortest way round, and positive to the left: bearings grow clockwise,
+    // the ego frame's y grows to the left, so the sign flips here once and
+    // nowhere else.
+    double turn = std::fmod(out_deg - in_deg + 540.0, 360.0) - 180.0;
+
+    m.valid    = true;
+    m.bend_deg = -turn;
+    m.dist_m   = std::max(0.0, progress_.distance_to_step_m);
+    return m;
 }
 
 void Navigator::update()
@@ -449,6 +769,7 @@ cv::Mat Navigator::panel(int height)
     view.speed_limit_kph = speed_limit_kph_;
     view.speed_inferred  = speed_inferred_;
     view.progress        = progress_;
+    view.waypoints       = mission_.empty() ? nullptr : &mission_;
     view.routing         = routing_;
     view.zoom_m          = cfg_.zoom_m;
     view.heading_up      = cfg_.heading_up;

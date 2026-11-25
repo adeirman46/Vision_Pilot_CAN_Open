@@ -729,10 +729,45 @@ cv::Mat render_map_panel(const OsmMap& map, const MapView& view, int width, int 
                     draw_polyline_clipped(g_basemap.img, pts, cv::Scalar(40, 60, 90), 11);
                     draw_polyline_clipped(g_basemap.img, pts, kRouteLine, 6);
                 }
-                const cv::Point d = bproject(view.route->dest_lat, view.route->dest_lon);
-                if (cv::Rect(0, 0, BW, BH).contains(d)) {
-                    cv::circle(g_basemap.img, d, 8, cv::Scalar(60, 60, 240), -1, cv::LINE_AA);
-                    cv::circle(g_basemap.img, d, 8, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+                // ── Waypoints ────────────────────────────────────────────
+                // Numbered, in visiting order, because a mission whose points
+                // are drawn but not ordered is a picture of where you clicked
+                // rather than a plan. The last one is the destination and stays
+                // red; the ones on the way are amber, so at a glance the end of
+                // the mission is distinguishable from the middle of it.
+                const cv::Rect basemap_rect(0, 0, BW, BH);
+                const size_t n_wp = view.waypoints ? view.waypoints->size() : 0;
+                for (size_t i = 0; i < n_wp; ++i) {
+                    const Waypoint& wp = (*view.waypoints)[i];
+                    const cv::Point p  = bproject(wp.lat, wp.lon);
+                    if (!basemap_rect.contains(p)) continue;
+
+                    const bool last = (i + 1 == n_wp);
+                    const cv::Scalar fill = last ? cv::Scalar(60, 60, 240)     // red
+                                                 : cv::Scalar(40, 170, 240);   // amber
+                    cv::circle(g_basemap.img, p, 9, fill, -1, cv::LINE_AA);
+                    cv::circle(g_basemap.img, p, 9, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+
+                    // Numbered only when there is a sequence to follow. A lone
+                    // destination with a "1" on it is just noise.
+                    if (n_wp > 1) {
+                        const std::string label = std::to_string(i + 1);
+                        int base = 0;
+                        const cv::Size ts =
+                            cv::getTextSize(label, kFont, 0.38, 1, &base);
+                        cv::putText(g_basemap.img, label,
+                                    cv::Point(p.x - ts.width / 2, p.y + ts.height / 2),
+                                    kFont, 0.38, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+                    }
+                }
+                // No mission to draw from — an externally supplied route still
+                // has an end, and it should still be marked.
+                if (n_wp == 0) {
+                    const cv::Point d = bproject(view.route->dest_lat, view.route->dest_lon);
+                    if (basemap_rect.contains(d)) {
+                        cv::circle(g_basemap.img, d, 8, cv::Scalar(60, 60, 240), -1, cv::LINE_AA);
+                        cv::circle(g_basemap.img, d, 8, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+                    }
                 }
             }
 

@@ -7,6 +7,7 @@
 #include <QPainter>
 #include <QResizeEvent>
 #include <QScreen>
+#include <QShortcut>
 #include <QStatusBar>
 #include <QWheelEvent>
 
@@ -114,6 +115,7 @@ void MapView::mousePressEvent(QMouseEvent* e)
     focus_click_ = !isActiveWindow();
     drag_last_ = e->pos();
     press_at_ = e->pos();
+    press_mods_ = e->modifiers();
     setCursor(Qt::ClosedHandCursor);
 }
 
@@ -142,7 +144,7 @@ void MapView::mouseReleaseEvent(QMouseEvent* e)
                            e->button() == Qt::LeftButton;
     dragging_ = false;
     setCursor(Qt::OpenHandCursor);
-    if (was_click) emit clicked(press_at_);
+    if (was_click) emit clicked(press_at_, press_mods_);
 }
 
 void MapView::wheelEvent(QWheelEvent* e)
@@ -228,6 +230,24 @@ MainWindow::MainWindow(Config cfg, bool debug_viz, QWidget* parent)
         map_->refresh();
     });
     connect(map_, &MapView::resized, this, &MainWindow::positionOverlay);
+
+    // Undo the last waypoint. A mission is built by clicking, and clicking is
+    // easy to get wrong — without a way back, one stray tap means clearing the
+    // route and starting the whole sequence again.
+    auto* undo_wp = new QShortcut(QKeySequence(Qt::Key_Backspace), this);
+    connect(undo_wp, &QShortcut::activated, this, [this] {
+        // The search box owns Backspace while it has focus; there it deletes a
+        // character, which is the only thing it can sensibly mean.
+        if (search_->hasFocus()) return;
+        if (nav_->waypoint_count() == 0) return;
+        nav_->pop_waypoint();
+        const size_t n = nav_->waypoint_count();
+        status_->setText(n == 0
+            ? QStringLiteral("Mission cleared")
+            : QString("Mission: %1 waypoint%2").arg(n).arg(n == 1 ? "" : "s"));
+        search_->setText(QString::fromStdString(nav_->destination_name()));
+        map_->refresh();
+    });
 
     // ── Pipeline on its own thread ───────────────────────────────────────────
     thread_ = new QThread(this);
@@ -402,16 +422,29 @@ void MainWindow::onSearchReturn()
     }
 }
 
-void MainWindow::onMapClicked(QPoint pos)
+void MainWindow::onMapClicked(QPoint pos, Qt::KeyboardModifiers mods)
 {
     // The pointer arrives in logical pixels; the panel was rendered in real
     // screen ones, and the projection that has to be inverted is in those.
     const qreal dpr = map_->devicePixelRatioF();
-    if (!nav_->set_destination_at_panel_px(pos.x() * dpr, pos.y() * dpr)) {
+
+    // Shift-click appends; a plain click retargets. Appending is the modified
+    // gesture rather than the default because retargeting is what is wanted
+    // ninety-nine drives out of a hundred, and because it keeps the window
+    // behaving exactly as it did before missions existed.
+    const bool append = (mods & Qt::ShiftModifier) != 0;
+    const bool ok = append
+        ? nav_->add_waypoint_at_panel_px(pos.x() * dpr, pos.y() * dpr)
+        : nav_->set_destination_at_panel_px(pos.x() * dpr, pos.y() * dpr);
+    if (!ok) {
         status_->setText(QStringLiteral(
             "Tap on the map itself to set a destination"));
         return;
     }
+    if (nav_->waypoint_count() > 1)
+        status_->setText(QString("Mission: %1 waypoints — shift-click to add, "
+                                 "Backspace to undo")
+                             .arg(nav_->waypoint_count()));
 
     // Reflect it in the search field, so the two ways of choosing a destination
     // leave the window in the same state.
@@ -425,6 +458,14 @@ void MainWindow::tick()
 {
     nav_->update();
     worker_->set_speed_limit_kph(nav_->speed_limit_kph());
+    // The route the vision path is asked to follow. Recomputed here rather than
+    // in the worker because the Navigator belongs to this thread.
+    if (cfg_.guidance.enabled) {
+        worker_->set_route_ego(nav_->route_ahead_ego(cfg_.guidance.lookahead_m));
+        const auto turn = nav_->next_maneuver();
+        worker_->set_maneuver(turn.valid, static_cast<float>(turn.dist_m),
+                              static_cast<float>(turn.bend_deg));
+    }
     map_->refresh();
 
     const auto fix = nav_->fix();

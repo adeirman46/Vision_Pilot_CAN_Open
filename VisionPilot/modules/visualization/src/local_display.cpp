@@ -53,14 +53,17 @@ namespace visualization
             d->mouse_.left_down = true;
             d->press_x_ = x;
             d->press_y_ = y;
+            d->press_shift_ = (flags & cv::EVENT_FLAG_SHIFTKEY) != 0;
         }
         if (event == cv::EVENT_LBUTTONUP) {
             d->mouse_.left_down = false;
             // A press and release in the same place is a click; one that
             // travelled was somebody moving the map, and must not be read as
             // "go here".
-            if (std::abs(x - d->press_x_) <= 4 && std::abs(y - d->press_y_) <= 4)
+            if (std::abs(x - d->press_x_) <= 4 && std::abs(y - d->press_y_) <= 4) {
                 ++d->mouse_.clicks;
+                d->mouse_.shift_click = d->press_shift_;
+            }
         }
         // Some builds report the button only in `flags`; trust that when it is
         // there, so a drag that started outside the window still tracks.

@@ -160,6 +160,31 @@ Config load_vision_pilot_config()
     cfg.inference.cte_bias_m   = static_cast<float>(
         parse_double(optional(kv, "fusion.cte_bias_m", "0.0"), "fusion.cte_bias_m"));
 
+    // ── Route corridor ────────────────────────────────────────────────────────
+    // The corridor width belongs to the fusion config because that is where it
+    // is used; the switch and the lookahead belong to the app, which is what
+    // asks the navigator for the route in the first place.
+    cfg.guidance.enabled     = parse_bool(optional(kv, "guidance.enabled", "false"),
+                                          "guidance.enabled");
+    cfg.guidance.lookahead_m = parse_double(optional(kv, "guidance.lookahead_m", "60"),
+                                            "guidance.lookahead_m");
+    cfg.inference.route_corridor_m = static_cast<float>(
+        parse_double(optional(kv, "guidance.corridor_m", "3.0"), "guidance.corridor_m"));
+    cfg.inference.route_min_pts    = parse_int(optional(kv, "guidance.min_points", "8"),
+                                               "guidance.min_points");
+    cfg.inference.route_fuse = parse_bool(optional(kv, "guidance.fuse", "true"),
+                                          "guidance.fuse");
+    cfg.inference.route_authority = static_cast<float>(
+        parse_double(optional(kv, "guidance.authority", "0.7"), "guidance.authority"));
+    cfg.inference.route_bend_min_deg = static_cast<float>(
+        parse_double(optional(kv, "guidance.bend_min_deg", "12"), "guidance.bend_min_deg"));
+    cfg.inference.route_bend_max_deg = static_cast<float>(
+        parse_double(optional(kv, "guidance.bend_max_deg", "50"), "guidance.bend_max_deg"));
+    cfg.inference.route_arm_m = static_cast<float>(
+        parse_double(optional(kv, "guidance.arm_m", "45"), "guidance.arm_m"));
+    cfg.inference.route_engage_m = static_cast<float>(
+        parse_double(optional(kv, "guidance.engage_m", "18"), "guidance.engage_m"));
+
     cfg.source.mode          = parse_source_mode(optional(kv, "source.mode", "video"));
 
     cfg.source.v4l2_device   = optional(kv, "source.v4l2_device", "/dev/video0");
@@ -209,6 +234,27 @@ Config load_vision_pilot_config()
                                      "nav.compare_gps");
         parse_lat_lon(optional(kv, "nav.fixed_position", "-6.9175,107.6191"),
                       "nav.fixed_position", nav.fixed_lat, nav.fixed_lon);
+
+        // "lat,lon;lat,lon;..." — the points to visit before the destination.
+        // One key rather than nav.waypoint.1/2/3 because the order is the whole
+        // meaning of a mission, and a numbered-key scheme turns reordering into
+        // a rename of every line after the change.
+        const std::string wps = optional(kv, "nav.waypoints", "");
+        if (!wps.empty()) {
+            size_t pos = 0;
+            while (pos <= wps.size()) {
+                const size_t sep = wps.find(';', pos);
+                const std::string one = trim(wps.substr(
+                    pos, sep == std::string::npos ? std::string::npos : sep - pos));
+                if (!one.empty()) {
+                    double wlat = 0.0, wlon = 0.0;
+                    parse_lat_lon(one, "nav.waypoints", wlat, wlon);
+                    nav.waypoints.emplace_back(wlat, wlon);
+                }
+                if (sep == std::string::npos) break;
+                pos = sep + 1;
+            }
+        }
 
         const std::string dest = optional(kv, "nav.destination", "");
         if (!dest.empty()) {

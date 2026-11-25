@@ -28,6 +28,10 @@ public:
         // without travelling, so a drag is not one. Where they were released is
         // (x, y), which for a click is also where they were pressed.
         int  clicks = 0;
+        // Shift was held at the press. Carried from the press rather than read
+        // at the release because the press is what the driver meant, and it is
+        // what tells a "go here" apart from a "go here next".
+        bool shift_click = false;
     };
     virtual MouseState mouse() { return {}; }
 };

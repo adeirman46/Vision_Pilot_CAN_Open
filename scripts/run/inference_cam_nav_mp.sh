@@ -697,6 +697,11 @@ set_conf nav.compare_gps "$COMPARE"  "$MAIN_CONF"
 [ -n "$FIXED_POS" ] && set_conf nav.fixed_position   "$FIXED_POS" "$MAIN_CONF"
 set_conf nav.destination      "$DEST"      "$MAIN_CONF"
 set_conf nav.destination_name "$DEST_NAME" "$MAIN_CONF"
+# This script plans a single destination, so it clears any multi-waypoint
+# mission left in the shared config by inference_cam_nav_follow.sh. Without this
+# line a mission planned there would still be in force here, and the route drawn
+# would tour points nobody asked this script for.
+set_conf nav.waypoints        ""           "$MAIN_CONF"
 
 # ── Imagery ──────────────────────────────────────────────────────────────────
 # The only keys that differ from inference_cam_nav.sh. They are written every

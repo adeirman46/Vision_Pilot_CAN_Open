@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <vector>
 
 #include <QImage>
 #include <QObject>
@@ -32,6 +33,17 @@ public:
     // GUI thread from the map match, read by the worker as it draws.
     void set_speed_limit_kph(int kph) { speed_limit_kph_ = kph; }
 
+    // Route ahead in the ego frame, for the route corridor. Same arrangement as
+    // the speed limit above and for the same reason: the Navigator lives on the
+    // GUI thread, and this is what the worker is allowed to see of it. A vector
+    // cannot be an atomic, so it goes under a mutex — written once per tick,
+    // read once per inference frame, never contended for longer than a copy.
+    void set_route_ego(const std::vector<cv::Point2f>& route);
+    // The next turn the route asks for. Plain scalars, so unlike the route
+    // above they need no lock.
+    void set_maneuver(bool valid, float dist_m, float bend_deg)
+    { man_valid_ = valid; man_dist_m_ = dist_m; man_bend_deg_ = bend_deg; }
+
     // The newest frame, whatever the GUI last managed to draw. Handing the
     // image over through a slot instead of through the signal is what keeps the
     // view live: see the note on frameReady().
@@ -60,6 +72,12 @@ private:
     bool              debug_viz_;
     std::atomic<bool> running_{true};
     std::atomic<int>  speed_limit_kph_{0};
+
+    std::mutex               route_mtx_;
+    std::vector<cv::Point2f> route_ego_;
+    std::atomic<bool>        man_valid_{false};
+    std::atomic<float>       man_dist_m_{0.f};
+    std::atomic<float>       man_bend_deg_{0.f};
 
     std::mutex        frame_mtx_;
     QImage            latest_;

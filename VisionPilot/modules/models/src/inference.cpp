@@ -95,6 +95,14 @@ InferencePipeline::InferencePipeline(engine::OnnxEngine& engine, const Config& c
     fusion::LateralFusion::Config latc;
     latc.debug      = cfg.fusion_debug;
     latc.cte_bias_m = cfg.cte_bias_m;
+    latc.route_corridor_m = cfg.route_corridor_m;
+    latc.route_min_pts    = cfg.route_min_pts;
+    latc.route_fuse         = cfg.route_fuse;
+    latc.route_authority    = cfg.route_authority;
+    latc.route_bend_min_deg = cfg.route_bend_min_deg;
+    latc.route_bend_max_deg = cfg.route_bend_max_deg;
+    latc.route_arm_m        = cfg.route_arm_m;
+    latc.route_engage_m     = cfg.route_engage_m;
     lat_fusion_ = fusion::LateralFusion{latc};
 }
 
@@ -133,6 +141,16 @@ void InferencePipeline::set_H_resized(const cv::Mat& H, cv::Size raw_size)
     long_fusion_.set_H(H_resized_);
     VP_INFO("[Pipeline] H_resized set — raw=%dx%d  top_crop=%d  sx=%.4f sy=%.4f",
             raw_size.width, raw_size.height, crop_top, sx, sy);
+}
+
+void InferencePipeline::set_route_ego(const std::vector<cv::Point2f>& route_ego)
+{
+    lat_fusion_.set_route(route_ego);
+}
+
+void InferencePipeline::set_maneuver(bool valid, float dist_m, float bend_deg)
+{
+    lat_fusion_.set_maneuver(valid, dist_m, bend_deg);
 }
 
 std::optional<InferenceFrameResult> InferencePipeline::process(const cv::Mat& warped,

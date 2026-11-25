@@ -44,6 +44,8 @@ int main(int argc, char** argv)
         if (a == "--debug-viz")   debug_viz = true;
         else if (a == "--nav")    cfg.navigation.enabled = true;
         else if (a == "--no-nav") cfg.navigation.enabled = false;
+        else if (a == "--guidance")    cfg.guidance.enabled = true;
+        else if (a == "--no-guidance") cfg.guidance.enabled = false;
     }
     // The map panel is the point of this front-end; without it there is nothing
     // the plain OpenCV window does not already do.

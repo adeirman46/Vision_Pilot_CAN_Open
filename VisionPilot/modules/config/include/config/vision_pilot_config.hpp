@@ -26,12 +26,31 @@ struct SourceConfig {
 //     bool initial_inference_check = true;
 // };
 
+// ── Route corridor ───────────────────────────────────────────────────────────
+// Makes the vision path follow the navigation route: the route's own waypoints
+// are converted into the ego frame and used to throw away the AutoSteer
+// waypoints that describe a branch the route does not take. Without it, the
+// path fit at a junction picks a branch at random and re-picks it every frame.
+//
+// It needs a route, so it does nothing at all unless nav is on and a
+// destination is set. The corridor width itself lives in Config::inference,
+// which is the struct LateralFusion is built from.
+struct GuidanceConfig {
+    bool   enabled     = false;
+    // How far up the route to build the corridor, metres. Long enough to cover
+    // the junction the car is approaching, short enough that the far end of it
+    // is not being placed by a heading estimate that has since gone stale.
+    double lookahead_m = 60.0;
+};
+
 struct Config {
     vpe::Config engine;
     vpm::Config inference;
     SourceConfig      source;
     // Offline OSM map panel drawn to the right of the inference view
     navigation::Config navigation;
+    // Route corridor: the navigation route filtering the vision waypoints
+    GuidanceConfig     guidance;
     // True once a real vehicle speed arrives over CAN. While false the HUD
     // shows a dash instead of the synthesised constant the planner is fed.
     bool vehicle_speed_valid = false;

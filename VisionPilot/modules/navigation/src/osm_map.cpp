@@ -79,6 +79,15 @@ void lat_lon_to_en(double lat, double lon, double ref_lat, double ref_lon,
     east_m  = (lon - ref_lon) * M_PI / 180.0 * kEarthR * std::cos(lat_r);
 }
 
+void en_to_ego(double east_m, double north_m, double heading_deg,
+               double& x_forward_m, double& y_left_m)
+{
+    const double h = heading_deg * M_PI / 180.0;
+    const double sh = std::sin(h), ch = std::cos(h);
+    x_forward_m =  east_m * sh + north_m * ch;
+    y_left_m    = -east_m * ch + north_m * sh;
+}
+
 double haversine_m(double lat1, double lon1, double lat2, double lon2)
 {
     const double p = M_PI / 180.0;

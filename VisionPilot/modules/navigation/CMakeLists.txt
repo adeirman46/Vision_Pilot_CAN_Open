@@ -54,6 +54,12 @@ target_compile_features(test_gps_imu_ekf PRIVATE cxx_std_17)
 # A field read from the wrong end still checksums and still puts a plausible
 # coordinate on the map, so known bytes are the only way to catch it — and this
 # runs with no board plugged in.
+# East/north → ego frame. Four multiplications, and a sign error in them
+# mirrors every route about the car's axis while still looking plausible.
+add_executable(test_en_to_ego tests/test_en_to_ego.cpp)
+target_link_libraries(test_en_to_ego PRIVATE navigation)
+target_compile_features(test_en_to_ego PRIVATE cxx_std_17)
+
 add_executable(test_nucleo_gps tests/test_nucleo_gps.cpp)
 target_link_libraries(test_nucleo_gps PRIVATE navigation)
 target_compile_features(test_nucleo_gps PRIVATE cxx_std_17)

@@ -37,6 +37,8 @@ static const cv::Scalar kClrHeader    {220, 220, 220};
 static const cv::Scalar kClrNormal    {200, 200, 200};
 static const cv::Scalar kClrFusedLong {  0, 220,   0};
 static const cv::Scalar kClrFusedLat  {  0, 220, 255};  // yellow/cyan — fused path
+static const cv::Scalar kClrRoute     {255,   0, 200};  // magenta — navigation route
+static const cv::Scalar kClrDropped   { 60,  60, 200};  // dull red — waypoint the route rejected
 static const cv::Scalar kClrTopBar    {200, 200, 200};
 static const cv::Scalar kClrSteerLbl  {120, 240, 120};
 static const cv::Scalar kClrAdWheel   {240, 240, 240};
@@ -309,16 +311,23 @@ static cv::Point world_to_bev_px(float x_fwd, float y_lat,
         static_cast<int>(std::lround(cy - x_fwd * px_per_m)));
 }
 
+// Top-down inset: the route corridor, the waypoints it kept and threw away, and
+// the path that was fitted to what survived. This is the one view where the
+// filter can actually be judged — the corridor either sits on the branch the car
+// is taking or it does not, and everything else follows from that.
 static void draw_bev_fused_ego_path(cv::Mat& img,
                                      const fusion::LateralFusionEstimate& lat,
                                      const OverlayLayout& L)
 {
-    if (!lat.path_valid) return;
+    if (!lat.path_valid && !lat.route_active) return;
 
     const cv::Rect panel_rect = L.bev & cv::Rect(0, 0, img.cols, img.rows);
     if (panel_rect.width < 40 || panel_rect.height < 40) return;
 
-    draw_panel(img, panel_rect, "FUSED PATH (top-down)", kClrFusedLat);
+    draw_panel(img, panel_rect,
+               lat.route_active ? "FUSED PATH + ROUTE (top-down)"
+                                : "FUSED PATH (top-down)",
+               lat.route_active ? kClrRoute : kClrFusedLat);
 
     const int pw = panel_rect.width;
     const int ph = panel_rect.height;
@@ -327,26 +336,121 @@ static void draw_bev_fused_ego_path(cv::Mat& img,
     static constexpr float kPxPerM  = 4.5f;
     static constexpr float kLatMaxM = 7.f;
 
-    const float x_end = (lat.path_x_max_m > lat.path_x_min_m + 1.f)
-        ? lat.path_x_max_m : 0.f;
-    if (x_end < 2.f) return;
+    // Inside the inset, in metres.
+    auto on_panel = [&](const cv::Point& p) {
+        return p.x >= 2 && p.x < pw - 2 && p.y >= 20 && p.y < ph - 2;
+    };
 
-    const float a = lat.path_a, b = lat.path_b, c = lat.path_c;
-    std::vector<cv::Point> poly;
-    for (float x = 0.f; x <= x_end; x += 1.f) {
-        const float y = a * x * x + b * x + c;
-        if (std::abs(y) > kLatMaxM) continue;
-        const cv::Point p = world_to_bev_px(x, y, pw, ph, kPxPerM);
-        if (p.x < 2 || p.x >= pw - 2 || p.y < 20 || p.y >= ph - 2) continue;
-        poly.push_back(p);
+    // ── The route and its corridor ────────────────────────────────────────────
+    if (lat.route_active && lat.route_ego.size() >= 2) {
+        // Corridor edges: the route offset by ±corridor along each segment
+        // normal. Drawing the boundary rather than quoting the number is the
+        // difference between seeing that a waypoint fell just outside and
+        // guessing at it.
+        const float w = lat.route_corridor_m;
+        std::vector<cv::Point> left, right, centre;
+        for (size_t i = 0; i < lat.route_ego.size(); ++i) {
+            const cv::Point2f& c = lat.route_ego[i];
+            const cv::Point2f& a = lat.route_ego[i > 0 ? i - 1 : i];
+            const cv::Point2f& b = lat.route_ego[i + 1 < lat.route_ego.size() ? i + 1 : i];
+            float tx = b.x - a.x, ty = b.y - a.y;
+            const float n = std::hypot(tx, ty);
+            if (n < 1e-6f) { tx = 1.f; ty = 0.f; } else { tx /= n; ty /= n; }
+            const float nx = -ty, ny = tx;   // left normal
+
+            const cv::Point pc = world_to_bev_px(c.x, c.y, pw, ph, kPxPerM);
+            const cv::Point pl = world_to_bev_px(c.x + nx * w, c.y + ny * w, pw, ph, kPxPerM);
+            const cv::Point pr = world_to_bev_px(c.x - nx * w, c.y - ny * w, pw, ph, kPxPerM);
+            if (on_panel(pc)) centre.push_back(pc);
+            if (on_panel(pl)) left.push_back(pl);
+            if (on_panel(pr)) right.push_back(pr);
+        }
+        if (left.size()  >= 2) cv::polylines(panel, left,  false, kClrRoute, 1, cv::LINE_AA);
+        if (right.size() >= 2) cv::polylines(panel, right, false, kClrRoute, 1, cv::LINE_AA);
+        if (centre.size() >= 2) cv::polylines(panel, centre, false, kClrRoute, 2, cv::LINE_AA);
     }
-    if (poly.size() >= 2)
-        cv::polylines(panel, poly, false, kClrFusedLat, 2, cv::LINE_AA);
+
+    // ── The waypoints, before and after ───────────────────────────────────────
+    for (const auto& p : lat.wp_dropped) {
+        const cv::Point q = world_to_bev_px(p.x, p.y, pw, ph, kPxPerM);
+        if (!on_panel(q)) continue;
+        cv::line(panel, {q.x - 2, q.y - 2}, {q.x + 2, q.y + 2}, kClrDropped, 1, cv::LINE_AA);
+        cv::line(panel, {q.x - 2, q.y + 2}, {q.x + 2, q.y - 2}, kClrDropped, 1, cv::LINE_AA);
+    }
+    for (const auto& p : lat.wp_kept) {
+        const cv::Point q = world_to_bev_px(p.x, p.y, pw, ph, kPxPerM);
+        if (on_panel(q)) cv::circle(panel, q, 2, kClrEgoPath, -1, cv::LINE_AA);
+    }
+
+    // ── The fit ───────────────────────────────────────────────────────────────
+    const float x_end = (lat.path_valid && lat.path_x_max_m > lat.path_x_min_m + 1.f)
+        ? lat.path_x_max_m : 0.f;
+    if (x_end >= 2.f) {
+        const float a = lat.path_a, b = lat.path_b, c = lat.path_c;
+        std::vector<cv::Point> poly;
+        for (float x = 0.f; x <= x_end; x += 1.f) {
+            const float y = a * x * x + b * x + c;
+            if (std::abs(y) > kLatMaxM) continue;
+            const cv::Point p = world_to_bev_px(x, y, pw, ph, kPxPerM);
+            if (!on_panel(p)) continue;
+            poly.push_back(p);
+        }
+        if (poly.size() >= 2)
+            cv::polylines(panel, poly, false, kClrFusedLat, 2, cv::LINE_AA);
+    }
+
+    // The corridor standing down is the one state that must never be silent:
+    // the frame looks filtered and is not.
+    if (lat.route_fallback)
+        cv::putText(panel, "corridor stood down", cv::Point(6, ph - 6),
+                    kFont, 0.32, kClrDropped, 1, cv::LINE_AA);
 
     const cv::Point ego = world_to_bev_px(0.f, 0.f, pw, ph, kPxPerM);
     cv::circle(panel, ego, 4, cv::Scalar(255, 255, 255), -1, cv::LINE_AA);
     cv::putText(panel, "ego", cv::Point(ego.x + 6, ego.y + 4),
                 kFont, 0.32, kClrNormal, 1, cv::LINE_AA);
+}
+
+// The same route, back-projected onto the camera image, so the corridor can be
+// read against the junction it is meant to be sitting on.
+static void draw_route_on_image(cv::Mat& img,
+                                const fusion::LateralFusionEstimate& lat,
+                                const cv::Mat& H_inv)
+{
+    if (!lat.route_active || H_inv.empty() || lat.route_ego.size() < 2) return;
+
+    std::vector<cv::Point2f> world(lat.route_ego.begin(), lat.route_ego.end());
+    std::vector<cv::Point2f> img_pts;
+    cv::perspectiveTransform(world, img_pts, H_inv);
+
+    std::vector<cv::Point> poly;
+    for (const auto& p : img_pts) {
+        const int u = static_cast<int>(p.x), v = static_cast<int>(p.y);
+        if (u < 0 || u >= img.cols || v < 0 || v >= img.rows) continue;
+        poly.emplace_back(u, v);
+    }
+    if (poly.size() >= 2) {
+        cv::polylines(img, poly, false, kClrRoute, 2, cv::LINE_AA);
+        cv::Point tag_pt = poly[0];
+        for (const auto& p : poly)
+            if (p.y > tag_pt.y) tag_pt = p;
+        draw_tag(img, cv::Point(tag_pt.x + 8, tag_pt.y - 8), "Route", kClrRoute);
+    }
+
+    // Cross out what the corridor rejected, where it sits in the picture. A
+    // waypoint struck through on the wrong arm of a junction is the filter
+    // working; one struck through on the arm the car is taking is the corridor
+    // being in the wrong place, and needs to be as easy to see.
+    if (!lat.wp_dropped.empty()) {
+        std::vector<cv::Point2f> dw(lat.wp_dropped.begin(), lat.wp_dropped.end()), dp;
+        cv::perspectiveTransform(dw, dp, H_inv);
+        for (const auto& p : dp) {
+            const int u = static_cast<int>(p.x), v = static_cast<int>(p.y);
+            if (u < 3 || u >= img.cols - 3 || v < 3 || v >= img.rows - 3) continue;
+            cv::line(img, {u - 4, v - 4}, {u + 4, v + 4}, kClrDropped, 2, cv::LINE_AA);
+            cv::line(img, {u - 4, v + 4}, {u + 4, v - 4}, kClrDropped, 2, cv::LINE_AA);
+        }
+    }
 }
 
 // Back-project fused polynomial onto camera image via H⁻¹ (world → pixels).
@@ -552,6 +656,15 @@ static void draw_hud_panel(cv::Mat& img, const DebugView& v, const OverlayLayout
                           v.lateral.path_inliers, v.lateral.path_points);
             text(c3x, y + lineH, path_buf, kClrNormal, 0.36);
         }
+        if (v.lateral.route_active) {
+            char route_buf[80];
+            std::snprintf(route_buf, sizeof(route_buf), "route     %d/%d kept  +/-%.1fm%s",
+                          v.lateral.route_pts_kept, v.lateral.route_pts_in,
+                          static_cast<double>(v.lateral.route_corridor_m),
+                          v.lateral.route_fallback ? "  STOOD DOWN" : "");
+            text(c3x, y + 2 * lineH, route_buf,
+                 v.lateral.route_fallback ? kClrDropped : kClrRoute, 0.36);
+        }
     } else {
         text(c3x, y, "(no path / fusion)", kClrNormal);
     }
@@ -580,6 +693,7 @@ void annotate_frame(cv::Mat& frame, const DebugView& view,
     // Scene overlays (paths, boxes) — drawn first
     draw_autospeed_detections(frame, view.auto_speed);
     draw_autosteer_ego_path(frame, view.auto_steer);
+    draw_route_on_image(frame, view.lateral, H_use);
     draw_fused_path_on_image(frame, view.lateral, H_use);
 
     // Chrome: legend, BEV, wheels, bars (on top, fixed zones)

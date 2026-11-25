@@ -34,6 +34,11 @@ struct MapView {
     bool        speed_inferred  = false;
 
     const Route*  route    = nullptr;
+    // The mission behind that route, so the intermediate points can be drawn
+    // and numbered. The route alone cannot show them: once the legs are
+    // stitched it is one line, and where the driver clicked is no longer
+    // recoverable from it. Owned by the caller; may be null.
+    const std::vector<Waypoint>* waypoints = nullptr;
     RouteProgress progress;
     bool          routing  = false;   // a route is being computed right now
 

@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include <opencv2/core.hpp>
 
@@ -46,9 +47,28 @@ public:
     void update();
 
     // Retarget. Recomputes on the worker thread; the panel keeps drawing the old
-    // route until the new one lands.
+    // route until the new one lands. Replaces the whole mission with this one
+    // point — it is "go here", not "go here next".
     void set_destination(double lat, double lon, const std::string& name = "");
     void clear_destination();
+
+    // ── Missions ─────────────────────────────────────────────────────────────
+    // A route through a list of points in order, the way a ground station plans
+    // one: click, click, click, and the vehicle visits them in that sequence.
+    // A single destination is just a mission of length one, so there is one
+    // mechanism here and not two.
+    //
+    // Each leg is routed separately and the legs are stitched into one Route,
+    // which means everything downstream — the progress tracker, the turn
+    // banner, the corridor that filters the vision waypoints — carries on
+    // working without knowing a mission exists.
+    // Append a point to the end of the mission and re-route through all of them.
+    void add_waypoint(double lat, double lon, const std::string& name = "");
+    // Remove the last one. Undo for a misplaced click, which on a map is the
+    // most common thing to want.
+    void pop_waypoint();
+    const std::vector<Waypoint>& mission() const { return mission_; }
+    size_t waypoint_count() const { return mission_.size(); }
 
     // ── Tap the map to go there ──────────────────────────────────────────────
     // A destination the driver can see but cannot name — a junction, a gate, the
@@ -60,6 +80,9 @@ public:
     // The same, in the composed frame's coordinates — for the OpenCV front-end,
     // which has one window and no widget to measure against.
     bool set_destination_at_canvas_px(int x, int y);
+    // The same two, appending to the mission instead of replacing it.
+    bool add_waypoint_at_panel_px(double px, double py);
+    bool add_waypoint_at_canvas_px(int x, int y);
     // The same conversion on its own, for a front-end that wants the coordinate
     // without committing to a route.
     bool panel_px_to_lat_lon(double px, double py, double& lat, double& lon) const;
@@ -135,11 +158,61 @@ public:
     // Speed limit of the road currently under the ego, km/h. 0 when unknown.
     int speed_limit_kph() const;
 
+    // ── The route, in the frame the vision path lives in ─────────────────────
+    // The route's own waypoints converted to ego coordinates: x forward, y left,
+    // metres — exactly what LateralFusion projects AutoSteer's waypoints into.
+    // That shared frame is the whole point: once the two are in it, the route
+    // can say which of the branches leaving a junction the vision waypoints are
+    // allowed to describe.
+    //
+    // Resampled at 1 m, because OSM stores geometry at whatever spacing the
+    // mapper drew it with — 5 m round a bend, 80 m down a straight — and a
+    // corridor built from those raw nodes would be lumpy in exactly the places
+    // it matters.
+    //
+    // Empty when there is no route, no fix, or no usable heading. An empty
+    // result turns the corridor off rather than filtering against a guess.
+    std::vector<cv::Point2f> route_ahead_ego(double lookahead_m = 60.0) const;
+
+    // ── The next thing the route asks the car to do ──────────────────────────
+    // The router has already found the turns and measured how far away they
+    // are; re-deriving that by fitting curves to the geometry throws the answer
+    // away and gets a worse one back. A junction is a corner between two OSM
+    // ways, and on a road whose nodes are 75 m apart any fixed measuring window
+    // either misses it or averages it into the straights either side.
+    //
+    // `bend_deg` is the heading change across the manoeuvre itself — tangent
+    // before against tangent after, +ve left — so a right-angle turn reads as a
+    // right angle however far off it is and however sparse the nodes are.
+    // Named NextTurn, not Maneuver: navigation::Maneuver is already the enum of
+    // turn kinds, and a nested type of that name would shadow it inside every
+    // member of this class.
+    struct NextTurn {
+        bool   valid    = false;
+        double dist_m   = 0.0;   // along the route, from the ego
+        double bend_deg = 0.0;   // +ve = left
+    };
+    NextTurn next_maneuver() const;
+
 private:
+    // A tap on the panel → a named point. Shared by "go here" and "go here
+    // next" so the two cannot disagree about where the finger landed.
+    // Name a coordinate after the road under it, for pins that came from a tap
+    // and pins that came from the config alike.
+    std::string name_at(double lat, double lon) const;
+    bool tap_to_point(double px, double py,
+                      double& lat, double& lon, std::string& name) const;
+    // Composed-frame pixels → panel pixels. The panel is rendered at one size
+    // and pasted at another, so a click has to be scaled before it means
+    // anything.
+    bool canvas_px_to_panel_px(int x, int y, double& px, double& py) const;
+
     void request_route();
+    // Routes every leg and stitches them into one Route. `mission` is copied
+    // rather than referenced because it runs on the worker thread and the UI
+    // may well have appended another point by the time it finishes.
     void route_worker(double from_lat, double from_lon, double heading_deg,
-                      bool have_heading, double to_lat, double to_lon,
-                      std::string dest_name);
+                      bool have_heading, std::vector<Waypoint> mission);
 
     Config                        cfg_;
     OsmMap                        map_;
@@ -173,7 +246,10 @@ private:
     std::atomic<bool>  shutdown_{false};
 
     bool        want_route_ = false;
-    double      dest_lat_ = 0.0, dest_lon_ = 0.0;
+    // The mission, in visiting order. Empty means no route. Its last entry is
+    // the destination, which is what dest_name_ reports and what the panel
+    // labels.
+    std::vector<Waypoint> mission_;
     std::string dest_name_;
 
     // ── Destination box state ────────────────────────────────────────────────
